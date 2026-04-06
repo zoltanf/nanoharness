@@ -1,0 +1,33 @@
+[project]
+name = "nanoharness"
+version = "0.1.0"
+description = "Lightweight AI coding agent harness for local LLMs via Ollama"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28",
+    "textual>=3.0",
+]
+
+[project.optional-dependencies]
+web = ["fastapi>=0.115", "uvicorn[standard]>=0.34"]
+test = ["pytest>=7.0", "pytest-asyncio>=0.24", "pytest-cov>=4.0"]
+playwright = ["pytest-playwright>=0.6", "pytest>=7.0"]
+
+[tool.uv]
+package = true
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+nanoharness = "nanoharness.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "playwright: browser tests with mocked backend (need playwright extra)",
+    "e2e: end-to-end tests with real Ollama (need running Ollama server)",
+]
+addopts = "-m 'not e2e'"
