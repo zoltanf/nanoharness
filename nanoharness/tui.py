@@ -19,7 +19,7 @@ from rich.markup import escape
 from rich.markdown import Markdown
 
 from .completion import complete_line, hint_for_input, is_incomplete_command
-from . import logging as dbg
+from . import logging as dbg, BANNER as _BANNER
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -318,13 +318,7 @@ class NanoHarnessApp(App):
 
     def on_mount(self) -> None:
         cfg = self.agent.config
-        BANNER = (
-            "  _  _                  _  _\n"
-            " | \\| |__ _ _ _  ___   | || |__ _ _ _ _  ___ _______\n"
-            " | .` / _` | ' \\/ _ \\  | __ / _` | '_| ' \\/ -_|_-<_-<\n"
-            " |_|\\_\\__,_|_||_\\___/  |_||_\\__,_|_| |_||_\\___|/__/__/"
-        )
-        self._append_chat(Text.from_markup(f"[bold green]{BANNER}[/]\n"))
+        self._append_chat(Text.from_markup(f"[bold green]{_BANNER}[/]\n"))
         self._append_chat(
             Text.from_markup(
                 f"[dim]v0.1.0 — {cfg.model.name} — {cfg.workspace}[/]\n"

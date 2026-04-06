@@ -10,6 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 web = ["fastapi>=0.115", "uvicorn[standard]>=0.34"]
+app = ["fastapi>=0.115", "uvicorn[standard]>=0.34", "pywebview>=4.3"]
 test = ["pytest>=7.0", "pytest-asyncio>=0.24", "pytest-cov>=4.0"]
 playwright = ["pytest-playwright>=0.6", "pytest>=7.0"]
 

@@ -13,7 +13,8 @@ try:
 except ImportError:
     readline = None  # type: ignore[assignment]
 
-from .config import load_config
+from .config import load_config, parse_args
+from . import BANNER as _BANNER
 from .ollama import OllamaClient
 from .startup import check_ollama, check_model, print_install_instructions
 from .agent import Agent, StreamEvent
@@ -47,13 +48,7 @@ def _setup_readline_completion(agent: Agent) -> None:
 async def run_repl(agent: Agent) -> int:
     """Basic REPL for testing without TUI."""
     _setup_readline_completion(agent)
-    BANNER = (
-        "  _  _                  _  _\n"
-        " | \\| |__ _ _ _  ___   | || |__ _ _ _ _  ___ _______\n"
-        " | .` / _` | ' \\/ _ \\  | __ / _` | '_| ' \\/ -_|_-<_-<\n"
-        " |_|\\_\\__,_|_||_\\___/  |_||_\\__,_|_| |_||_\\___|/__/__/"
-    )
-    print(BANNER)
+    print(_BANNER)
     print()
     print(f"v0.1.0 — {agent.config.model.name} — {agent.config.workspace}")
     print(f"Thinking: {'on' if agent.config.model.thinking else 'off'} | Safety: {agent.config.safety.level}")
@@ -177,6 +172,10 @@ async def async_main() -> int:
 
 
 def main() -> None:
+    # --app must bypass asyncio.run(): pywebview requires the main thread on macOS
+    if parse_args().app:
+        from .desktop import main_desktop
+        sys.exit(main_desktop())
     sys.exit(asyncio.run(async_main()))
 
 

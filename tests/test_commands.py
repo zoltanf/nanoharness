@@ -143,10 +143,10 @@ class TestClearCommand:
 class TestConfigCommand:
     def test_shows_fields(self, handler: CommandHandler):
         r = handler.handle("/config")
-        assert "Model:" in r.output
-        assert "Thinking:" in r.output
-        assert "Safety:" in r.output
-        assert "Workspace:" in r.output
+        assert "model.name" in r.output
+        assert "model.thinking" in r.output
+        assert "safety.level" in r.output
+        assert "workspace" in r.output
 
     def test_shows_once(self, handler: CommandHandler):
         handler.handle("/think once")

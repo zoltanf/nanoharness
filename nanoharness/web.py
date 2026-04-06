@@ -8,10 +8,12 @@ import webbrowser
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, TYPE_CHECKING
 
+import json as _json
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-from . import logging as log
+from . import logging as log, BANNER as _BANNER
 
 if TYPE_CHECKING:
     from .agent import Agent, StreamEvent
@@ -44,6 +46,7 @@ def create_app(
         .replace("__SAFETY__", cfg.safety.level)
         .replace("__WS_PORT__", str(port))
         .replace("__WORKSPACE__", str(cfg.workspace))
+        .replace("__BANNER__", _json.dumps(_BANNER))
     )
 
     @app.get("/", response_class=HTMLResponse)
@@ -192,6 +195,14 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* Status/error messages */
   .msg-status { color: var(--fg-dim); font-size: 13px; text-align: center; font-style: italic; }
   .msg-error { color: var(--red); font-weight: 600; }
+
+  /* Welcome banner */
+  .banner { font-family: var(--mono); font-size: 12px; color: var(--green); line-height: 1.4; white-space: pre; }
+  .banner-meta { font-family: var(--mono); font-size: 12px; color: var(--fg-dim); margin-top: 4px; }
+
+  /* /info markup output */
+  .msg-markup { font-family: var(--mono); font-size: 13px; line-height: 1.7; }
+  .msg-markup .dim { color: var(--fg-dim); }
 
   /* Spinner */
   .spinner { display: flex; align-items: center; gap: 8px; color: var(--fg-dim); font-size: 13px; padding: 4px 0; }
@@ -381,6 +392,16 @@ function handleEvent(ev) {
       tr.textContent = preview;
       chat.appendChild(tr);
       showSpinner(thinkingEnabled ? 'Thinking' : 'Processing');
+      scrollBottom();
+      break;
+
+    case 'markup':
+      hideSpinner();
+      flushAssistant();
+      const mk = document.createElement('div');
+      mk.className = 'msg-markup';
+      mk.innerHTML = richToHtml(ev.text);
+      chat.appendChild(mk);
       scrollBottom();
       break;
 
@@ -669,6 +690,60 @@ function esc(s) {
   return d.innerHTML;
 }
 
+// Convert Rich markup ([bold cyan]text[/]) to HTML.
+// Only handles the subset emitted by _info_command.
+function richToHtml(text) {
+  const COLOR = { cyan: 'var(--cyan)', green: 'var(--green)', red: 'var(--red)', yellow: 'var(--yellow)' };
+  const parts = text.split(/(\[[^\]]*\])/);
+  let html = '';
+  const stack = [];
+  for (const part of parts) {
+    if (!part.startsWith('[')) {
+      html += part.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+      continue;
+    }
+    const tag = part.slice(1, -1).trim().toLowerCase();
+    if (tag === '/' || tag.startsWith('/')) {
+      const open = stack.pop();
+      if (open) html += '</' + open + '>';
+      continue;
+    }
+    const words = tag.split(/\s+/);
+    let elem = 'span', style = '', hasDim = false;
+    for (const w of words) {
+      if (w === 'bold')        elem = 'strong';
+      else if (w === 'italic') style += 'font-style:italic;';
+      else if (w === 'dim')    hasDim = true;
+      else if (COLOR[w])       style += 'color:' + COLOR[w] + ';';
+    }
+    let attrs = '';
+    if (hasDim) attrs += ' class="dim"';
+    if (style)  attrs += ' style="' + style + '"';
+    stack.push(elem);
+    html += '<' + elem + attrs + '>';
+  }
+  while (stack.length) html += '</' + stack.pop() + '>';
+  return html;
+}
+
+function initWelcome() {
+  const frag = document.createDocumentFragment();
+  const bannerEl = document.createElement('div');
+  bannerEl.className = 'banner';
+  bannerEl.textContent = __BANNER__;
+  frag.appendChild(bannerEl);
+  const metaEl = document.createElement('div');
+  metaEl.className = 'banner-meta';
+  metaEl.textContent = 'v0.1.0 \u2014 __MODEL_NAME__ \u2014 __WORKSPACE__';
+  frag.appendChild(metaEl);
+  const tipEl = document.createElement('div');
+  tipEl.className = 'msg-status';
+  tipEl.textContent = 'Type /help for commands';
+  frag.appendChild(tipEl);
+  chat.appendChild(frag);
+}
+
+initWelcome();
 connect();
 </script>
 </body>

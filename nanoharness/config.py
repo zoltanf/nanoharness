@@ -131,6 +131,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--repl", action="store_true", default=False, help="Launch basic REPL instead of TUI")
     p.add_argument("--web", action="store_true", default=False, help="Launch web UI in browser")
     p.add_argument("--port", type=int, default=None, help="Web UI port (default: 8321)")
+    p.add_argument("--app", action="store_true", default=False, help="Launch as desktop app (native webview window)")
     p.add_argument("--no-open", action="store_true", default=False, help="Don't auto-open browser for web UI")
     p.add_argument("--num-ctx", type=int, default=None, help="Context window size (tokens); 0 = model default")
     return p.parse_args(argv)
