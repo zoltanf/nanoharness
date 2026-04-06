@@ -8,7 +8,6 @@ import webbrowser
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, TYPE_CHECKING
 
-import json as _json
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -46,7 +45,7 @@ def create_app(
         .replace("__SAFETY__", cfg.safety.level)
         .replace("__WS_PORT__", str(port))
         .replace("__WORKSPACE__", str(cfg.workspace))
-        .replace("__BANNER__", _json.dumps(_BANNER))
+        .replace("__BANNER__", json.dumps(_BANNER))
     )
 
     @app.get("/", response_class=HTMLResponse)
@@ -114,6 +113,13 @@ def create_app(
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
+    @app.post("/api/shutdown")
+    async def shutdown():
+        """Shut down the server (used by /quit in app mode)."""
+        import os, signal
+        asyncio.get_event_loop().call_later(0.2, os.kill, os.getpid(), signal.SIGTERM)
+        return {"ok": True}
+
     return app
 
 
@@ -148,9 +154,28 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     --bg: #0d1117; --bg2: #161b22; --bg3: #1c2129;
     --fg: #c9d1d9; --fg-dim: #8b949e; --accent: #58a6ff;
     --green: #3fb950; --yellow: #d29922; --red: #f85149;
-    --cyan: #39c5cf; --border: #30363d;
+    --cyan: #39c5cf; --border: #30363d; --bubble: #1a3a4a; --bubble-border: #264a5a;
     --radius: 8px; --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     --mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    --btn-fg: #ffffff;
+  }
+  /* Light theme — follows system preference when no manual override */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #ffffff; --bg2: #f6f8fa; --bg3: #eef1f5;
+      --fg: #1f2328; --fg-dim: #656d76; --accent: #0969da;
+      --green: #1a7f37; --yellow: #9a6700; --red: #cf222e;
+      --cyan: #0550ae; --border: #d0d7de; --bubble: #ddf4ff; --bubble-border: #b6e3ff;
+      --btn-fg: #ffffff;
+    }
+  }
+  /* Manual light override (dark is the :root default, no override needed) */
+  [data-theme="light"] {
+    --bg: #ffffff; --bg2: #f6f8fa; --bg3: #eef1f5;
+    --fg: #1f2328; --fg-dim: #656d76; --accent: #0969da;
+    --green: #1a7f37; --yellow: #9a6700; --red: #cf222e;
+    --cyan: #0550ae; --border: #d0d7de; --bubble: #ddf4ff; --bubble-border: #b6e3ff;
+    --btn-fg: #ffffff;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; height: 100vh; display: flex; flex-direction: column; }
@@ -165,10 +190,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   /* Messages */
   .msg { max-width: 100%; }
-  .msg-user { align-self: flex-end; }
-  .msg-user .bubble { background: #1a3a4a; border: 1px solid #264a5a; border-radius: var(--radius); padding: 8px 14px; }
+  .msg-user { align-self: flex-end; margin-top: 12px; }
+  .msg-user .bubble { background: var(--bubble); border: 1px solid var(--bubble-border); border-radius: var(--radius); padding: 8px 14px; }
   .msg-user .label { color: var(--cyan); font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 
+  .msg-assistant { padding: 4px 8px; }
   .msg-assistant .content { line-height: 1.6; }
   .msg-assistant .content p { margin: 0.4em 0; }
   .msg-assistant .content pre { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; overflow-x: auto; margin: 0.6em 0; }
@@ -182,10 +208,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .msg-assistant .content blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--fg-dim); }
 
   /* Tool call/result */
-  .tool-call { border-left: 3px solid var(--yellow); background: var(--bg2); border-radius: 0 var(--radius) var(--radius) 0; padding: 6px 12px; font-family: var(--mono); font-size: 13px; }
+  .tool-call { border-left: 3px solid var(--yellow); background: var(--bg2); border-radius: 0 var(--radius) var(--radius) 0; padding: 8px 12px; margin: 2px 0; font-family: var(--mono); font-size: 13px; }
   .tool-call .name { color: var(--yellow); font-weight: 600; }
   .tool-call .args { color: var(--fg-dim); }
-  .tool-result { border-left: 3px solid var(--green); background: var(--bg2); border-radius: 0 var(--radius) var(--radius) 0; padding: 6px 12px; font-family: var(--mono); font-size: 12px; color: var(--green); white-space: pre-wrap; word-break: break-all; max-height: 200px; overflow-y: auto; }
+  .tool-result { border-left: 3px solid var(--green); background: var(--bg2); border-radius: 0 var(--radius) var(--radius) 0; padding: 8px 12px; margin: 2px 0; font-family: var(--mono); font-size: 12px; color: var(--green); white-space: pre-wrap; word-break: break-all; }
 
   /* Thinking */
   .thinking { color: var(--fg-dim); font-style: italic; font-size: 13px; }
@@ -193,7 +219,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .thinking pre { white-space: pre-wrap; margin-top: 4px; font-family: var(--mono); font-size: 12px; }
 
   /* Status/error messages */
-  .msg-status { color: var(--fg-dim); font-size: 13px; text-align: center; font-style: italic; }
+  .msg-status { color: var(--fg-dim); font-size: 13px; font-style: italic; white-space: pre-wrap; font-family: var(--mono); }
   .msg-error { color: var(--red); font-weight: 600; }
 
   /* Welcome banner */
@@ -218,10 +244,10 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   /* Input area */
   #input-area { background: var(--bg2); border-top: 1px solid var(--border); padding: 12px 16px; flex-shrink: 0; display: flex; gap: 8px; }
-  #input-area textarea { flex: 1; background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; font-family: var(--font); font-size: 14px; outline: none; resize: none; min-height: 42px; max-height: 200px; overflow-y: auto; line-height: 1.5; }
+  #input-area textarea { flex: 1; background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; font-family: var(--font); font-size: 14px; outline: none; resize: none; min-height: 42px; max-height: 200px; overflow-y: hidden; line-height: 1.5; }
   #input-area textarea:focus { border-color: var(--accent); }
   #input-area textarea::placeholder { color: var(--fg-dim); }
-  #input-area button { background: var(--accent); color: var(--bg); border: none; border-radius: var(--radius); padding: 10px 20px; font-weight: 600; cursor: pointer; font-size: 14px; }
+  #input-area button { background: var(--accent); color: var(--btn-fg); border: none; border-radius: var(--radius); padding: 8px 14px; font-weight: 700; cursor: pointer; font-size: 18px; line-height: 1; flex-shrink: 0; align-self: flex-end; margin-bottom: 3px; }
   #input-area button:hover { opacity: .9; }
   #input-area button:disabled { opacity: .4; cursor: default; }
 </style>
@@ -233,7 +259,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div id="hint-line" class="hidden"></div>
 <div id="input-area">
   <textarea id="input" rows="1" placeholder="Type a message or /help… Enter to send, Shift+Enter / Alt+Enter / Ctrl+J for newline" autocomplete="off" autofocus></textarea>
-  <button id="send" onclick="sendMessage()">Send</button>
+  <button id="send" onclick="sendMessage()" aria-label="Send">&#x2191;</button>
 </div>
 
 <div id="status">
@@ -242,6 +268,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <span class="dim">safety:__SAFETY__</span>
   <span class="dim" id="status-workspace">__WORKSPACE__</span>
   <span class="dim" id="status-ws">connecting...</span>
+  <span class="dim" id="theme-toggle" style="cursor:pointer;margin-left:auto;" onclick="toggleTheme()">theme:auto</span>
 </div>
 
 <script>
@@ -279,6 +306,7 @@ function scrollBottom() {
 function autoResize() {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 200) + 'px';
+  input.style.overflowY = input.scrollHeight > 200 ? 'auto' : 'hidden';
 }
 
 function setProcessing(v) {
@@ -406,11 +434,16 @@ function handleEvent(ev) {
       break;
 
     case 'status':
+      hideSpinner();
       flushAssistant();
+      if (ev.text === 'Conversation cleared.') {
+        chat.innerHTML = '';
+        initWelcome();
+        break;
+      }
       const st = document.createElement('div');
       st.className = 'msg-status';
       st.textContent = ev.text;
-      chat.appendChild(st);
       // Update thinking status if it changed
       if (ev.text.startsWith('Thinking mode:')) {
         if (ev.text.includes('once')) { statusThinking.textContent = 'think:once'; thinkingEnabled = true; }
@@ -419,9 +452,9 @@ function handleEvent(ev) {
       }
       // Update workspace if it changed
       if (ev.text.startsWith('Workspace changed to:')) {
-        const ws = ev.text.replace('Workspace changed to: ', '');
+        const newWs = ev.text.replace('Workspace changed to: ', '');
         const wsEl = document.getElementById('status-workspace');
-        if (wsEl) wsEl.textContent = ws;
+        if (wsEl) wsEl.textContent = newWs;
       }
       scrollBottom();
       break;
@@ -441,10 +474,7 @@ function handleEvent(ev) {
       flushAssistant();
       setProcessing(false);
       if (ev.text === 'quit') {
-        const q = document.createElement('div');
-        q.className = 'msg-status';
-        q.textContent = 'Session ended.';
-        chat.appendChild(q);
+        fetch('/api/shutdown', {method: 'POST'}).finally(() => window.close());
       }
       break;
   }
@@ -529,7 +559,7 @@ function sendMessage() {
   // Show user message
   const msg = document.createElement('div');
   msg.className = 'msg msg-user';
-  msg.innerHTML = '<div class="label">&gt;&gt;&gt;</div><div class="bubble">' + esc(text) + '</div>';
+  msg.innerHTML = '<div class="bubble">' + esc(text) + '</div>';
   chat.appendChild(msg);
   scrollBottom();
 
@@ -741,6 +771,19 @@ function initWelcome() {
   tipEl.textContent = 'Type /help for commands';
   frag.appendChild(tipEl);
   chat.appendChild(frag);
+}
+
+// --- Theme toggle ---
+function toggleTheme() {
+  const html = document.documentElement;
+  const current = html.getAttribute('data-theme');
+  let next;
+  if (!current) next = 'light';
+  else if (current === 'light') next = 'dark';
+  else next = null;
+  if (next) html.setAttribute('data-theme', next);
+  else html.removeAttribute('data-theme');
+  document.getElementById('theme-toggle').textContent = 'theme:' + (next || 'auto');
 }
 
 initWelcome();

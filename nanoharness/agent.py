@@ -377,8 +377,7 @@ class Agent:
             if result.clear_history:
                 self.clear_history()
             yield StreamEvent(type="status", text=result.output)
-            if result.should_quit:
-                yield StreamEvent(type="done", text="quit")
+            yield StreamEvent(type="done", text="quit" if result.should_quit else "")
             return
 
         # Check for inline /think once suffix (e.g. "explain this /think once")

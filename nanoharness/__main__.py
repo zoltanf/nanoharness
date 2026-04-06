@@ -91,6 +91,8 @@ async def run_repl(agent: Agent) -> int:
                         from rich.text import Text as RichText
                         Console().print(RichText.from_markup(event.text))
                     case "status":
+                        if event.text == "Conversation cleared.":
+                            print("\033[2J\033[H", end="", flush=True)
                         print(event.text)
                     case "error":
                         print(f"[error] {event.text}", file=sys.stderr)

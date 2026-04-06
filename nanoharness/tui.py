@@ -316,7 +316,7 @@ class NanoHarnessApp(App):
         chat = self.query_one("#chat-log", VerticalScroll)
         chat.scroll_end(animate=False)
 
-    def on_mount(self) -> None:
+    def _show_welcome(self) -> None:
         cfg = self.agent.config
         self._append_chat(Text.from_markup(f"[bold green]{_BANNER}[/]\n"))
         self._append_chat(
@@ -327,6 +327,9 @@ class NanoHarnessApp(App):
         )
         if cfg.debug:
             self._append_chat(Text.from_markup("[dim]Debug logging: ON[/]"))
+
+    def on_mount(self) -> None:
+        self._show_welcome()
         self.query_one(SpinnerLine).display = False
         self.query_one(CompletingInput).focus()
 
@@ -441,7 +444,12 @@ class NanoHarnessApp(App):
 
                     case "status":
                         _finalize_widgets()
-                        self._append_chat(Text.from_markup(f"[bold]{escape(ev.text)}[/]"))
+                        if ev.text == "Conversation cleared.":
+                            chat_log = self.query_one("#chat-log", VerticalScroll)
+                            chat_log.remove_children()
+                            self._show_welcome()
+                        else:
+                            self._append_chat(Text.from_markup(f"[bold]{escape(ev.text)}[/]"))
                         status_bar.refresh_status()
 
                     case "error":

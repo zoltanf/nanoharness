@@ -25,7 +25,14 @@ def _wait_for_server(url: str, timeout: float = 10.0) -> bool:
 def _run_uvicorn(agent, host: str, port: int) -> None:
     """Run uvicorn with its own event loop in a daemon thread."""
     import uvicorn
+    import httpx
     from .web import create_app
+
+    # Recreate httpx client — the previous one was used in the startup
+    # thread's event loop, which is now closed (causes "Event loop is closed").
+    agent.client._client = httpx.AsyncClient(
+        base_url=agent.client._base_url, timeout=300.0,
+    )
 
     app = create_app(agent, open_browser=False, host=host, port=port)
     cfg = uvicorn.Config(app, host=host, port=port, log_level="warning")
