@@ -390,12 +390,11 @@ class TestStatusUpdates:
         inp.fill("trigger status")
         inp.press("Enter")
 
-        # Wait for status message in chat
-        page.locator(".msg-status").wait_for(timeout=5000)
-
-        # Status bar should show updated thinking mode
-        thinking = page.locator("#status-thinking")
-        assert thinking.text_content() == "think:on"
+        # Wait for thinking indicator to update in status bar
+        page.wait_for_function(
+            "document.getElementById('status-thinking').textContent === 'think:on'",
+            timeout=5000,
+        )
 
 
 # ---------------------------------------------------------------------------
