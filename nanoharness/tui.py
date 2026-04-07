@@ -143,7 +143,9 @@ class CompletingInput(TextArea):
         # already returns full-line replacements — no prefix needed.
         # For all other cases, preserve everything before the last whitespace-separated token.
         stripped = current_line.lstrip()
-        if stripped.lower().startswith("/workspace ") or stripped.lower().startswith("/think "):
+        if (stripped.lower().startswith("/workspace ")
+                or stripped.lower().startswith("/think ")
+                or stripped.lower().startswith("/config ")):
             prefix = ""
         else:
             parts = stripped.rsplit(None, 1)

@@ -22,22 +22,31 @@ class CommandResult:
     refresh_status: bool = False
 
 
-HELP_TEXT = """/think              - Toggle thinking mode (on/off/once)
-/workspace DIR      - Switch workspace directory
-/code               - Open workspace in VS Code
-/clear              - Clear conversation history
-/config             - Show current configuration
-/config set KEY VAL - Edit a config value (persists to ~/.nanoharness/config.toml)
-/info               - Show model details from Ollama (api/ps + api/show)
-/todo               - Show current task list
-/todo clear         - Remove all tasks
-/todo add TEXT      - Add a task
-/todo done ID       - Mark a task done
-/todo remove ID     - Remove a task
-/help               - Show this help
-/quit               - Exit NanoHarness
-!<cmd>              - Run shell command directly (e.g. !ls -la)
-<msg> /think once   - Think for this message only"""
+HELP_TEXT = """
+Commands:
+  /think [on|off|once]        Toggle thinking mode; append to a message for one turn
+  /workspace [DIR]            Show or switch workspace directory
+  /code                       Open workspace in VS Code
+  /lazygit                    Open lazygit in a new terminal window
+  /clear                      Clear conversation history
+  /config                     Show current configuration
+  /config set KEY VAL         Edit a config value (saved to ~/.nanoharness/config.toml)
+  /info                       Show model details from Ollama
+  /todo [list|clear]          Show or clear the task list
+  /todo add TEXT              Add a task
+  /todo done ID | remove ID   Complete or remove a task by ID
+  /quit | /exit               Exit NanoHarness
+  !<cmd>                      Run a shell command directly (e.g. !ls -la)
+
+Key bindings:
+  Enter                       Send message
+  Ctrl+J                      Insert newline
+  Tab                         Autocomplete command or path
+  PageUp / PageDown           Scroll chat history
+  Home / End                  Jump to top / bottom of chat
+  Escape                      Interrupt running agent
+  Ctrl+C                      Quit
+"""
 
 CONFIG_KEYS = [
     "model.name",
@@ -163,6 +172,41 @@ class CommandHandler:
                     return CommandResult(output=f"Opening VS Code: {ws}")
                 except FileNotFoundError:
                     return CommandResult(output="Error: 'code' not found. Install the VS Code CLI via: Shell Command: Install 'code' command in PATH")
+
+            case "/lazygit":
+                import platform
+                import shlex
+                import shutil
+                import subprocess
+                if not shutil.which("lazygit"):
+                    return CommandResult(
+                        output="Error: 'lazygit' not found. Install from https://github.com/jesseduffield/lazygit"
+                    )
+                ws = shlex.quote(str(self.config.workspace))
+                try:
+                    if platform.system() == "Darwin":
+                        script = f'tell application "Terminal" to do script "cd {ws} && lazygit"'
+                        subprocess.Popen(["osascript", "-e", script])
+                    elif platform.system() == "Linux":
+                        _LINUX_TERMINALS = [
+                            ("gnome-terminal", ["--"]),
+                            ("xterm", ["-e"]),
+                            ("kitty", []),
+                            ("alacritty", ["-e"]),
+                            ("wezterm", ["start", "--"]),
+                        ]
+                        for term, extra_args in _LINUX_TERMINALS:
+                            if shutil.which(term):
+                                cmd = [term] + extra_args + ["sh", "-c", f"cd {ws} && lazygit"]
+                                subprocess.Popen(cmd)
+                                break
+                        else:
+                            return CommandResult(output="Error: No supported terminal emulator found (tried: gnome-terminal, xterm, kitty, alacritty, wezterm).")
+                    else:
+                        return CommandResult(output=f"Error: Unsupported platform '{platform.system()}'.")
+                    return CommandResult(output=f"Opening lazygit in new terminal: {self.config.workspace}")
+                except Exception as e:
+                    return CommandResult(output=f"Error launching lazygit: {e}")
 
             case "/todo":
                 return self._todo_command(arg)

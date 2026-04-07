@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-COMMANDS = ["/think", "/workspace", "/code", "/clear", "/config", "/info", "/todo", "/help", "/quit"]
+COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/todo", "/help", "/quit", "/exit"]
 
 THINK_OPTIONS = ["on", "off", "once"]
 SAFETY_OPTIONS = ["workspace", "unrestricted", "confirm"]
@@ -51,12 +51,14 @@ COMMAND_HINTS: dict[str, tuple[str, str]] = {
     "/think":     ("on|off|once",               "Toggle thinking mode"),
     "/workspace": ("<dir>",                     "Switch workspace directory"),
     "/code":      ("",                          "Open workspace in VS Code"),
+    "/lazygit":   ("",                          "Open lazygit in a new terminal window"),
     "/clear":     ("",                          "Clear conversation history"),
     "/config":    ("[set KEY VAL]",             "Show/edit configuration"),
     "/info":      ("",                          "Show model details from Ollama"),
     "/todo":      ("[list|clear|add|done|remove]", "Manage task list"),
     "/help":      ("",                          "Show available commands"),
     "/quit":      ("",                          "Exit NanoHarness"),
+    "/exit":      ("",                          "Exit NanoHarness"),
 }
 
 

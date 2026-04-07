@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -187,6 +188,71 @@ class TestShellEscape:
     def test_with_args(self, handler: CommandHandler):
         r = handler.handle("!ls -la /tmp")
         assert r.shell_command == "ls -la /tmp"
+
+
+class TestLazygitCommand:
+    def test_not_installed(self, handler: CommandHandler):
+        with patch("shutil.which", return_value=None):
+            r = handler.handle("/lazygit")
+        assert "Error" in r.output
+        assert "https://github.com/jesseduffield/lazygit" in r.output
+
+    def test_macos_opens_terminal(self, handler: CommandHandler):
+        with (
+            patch("shutil.which", return_value="/usr/local/bin/lazygit"),
+            patch("platform.system", return_value="Darwin"),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            r = handler.handle("/lazygit")
+        assert r.should_quit is False
+        assert "lazygit" in r.output.lower()
+        mock_popen.assert_called_once()
+        args = mock_popen.call_args[0][0]
+        assert args[0] == "osascript"
+        assert "lazygit" in args[2]
+
+    def test_linux_opens_terminal(self, handler: CommandHandler):
+        def which_side_effect(name):
+            if name == "lazygit":
+                return "/usr/bin/lazygit"
+            if name == "gnome-terminal":
+                return "/usr/bin/gnome-terminal"
+            return None
+
+        with (
+            patch("shutil.which", side_effect=which_side_effect),
+            patch("platform.system", return_value="Linux"),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            r = handler.handle("/lazygit")
+        assert r.should_quit is False
+        assert "lazygit" in r.output.lower()
+        mock_popen.assert_called_once()
+        args = mock_popen.call_args[0][0]
+        assert args[0] == "gnome-terminal"
+
+    def test_linux_no_terminal(self, handler: CommandHandler):
+        def which_side_effect(name):
+            if name == "lazygit":
+                return "/usr/bin/lazygit"
+            return None
+
+        with (
+            patch("shutil.which", side_effect=which_side_effect),
+            patch("platform.system", return_value="Linux"),
+        ):
+            r = handler.handle("/lazygit")
+        assert "Error" in r.output
+        assert "terminal" in r.output.lower()
+
+    def test_unsupported_platform(self, handler: CommandHandler):
+        with (
+            patch("shutil.which", return_value="/usr/bin/lazygit"),
+            patch("platform.system", return_value="Windows"),
+        ):
+            r = handler.handle("/lazygit")
+        assert "Error" in r.output
+        assert "Unsupported" in r.output
 
 
 class TestUnknownCommand:
