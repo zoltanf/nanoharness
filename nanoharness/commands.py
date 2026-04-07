@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .config import Config
+    from .tools import ToolExecutor
 
 
 @dataclass
@@ -18,14 +19,21 @@ class CommandResult:
     clear_history: bool = False
     shell_command: str | None = None
     workspace_changed: bool = False
+    refresh_status: bool = False
 
 
 HELP_TEXT = """/think              - Toggle thinking mode (on/off/once)
 /workspace DIR      - Switch workspace directory
+/code               - Open workspace in VS Code
 /clear              - Clear conversation history
 /config             - Show current configuration
 /config set KEY VAL - Edit a config value (persists to ~/.nanoharness/config.toml)
 /info               - Show model details from Ollama (api/ps + api/show)
+/todo               - Show current task list
+/todo clear         - Remove all tasks
+/todo add TEXT      - Add a task
+/todo done ID       - Mark a task done
+/todo remove ID     - Remove a task
 /help               - Show this help
 /quit               - Exit NanoHarness
 !<cmd>              - Run shell command directly (e.g. !ls -la)
@@ -47,6 +55,7 @@ class CommandHandler:
     def __init__(self, config: Config):
         self.config = config
         self._think_once = False
+        self.tools: ToolExecutor | None = None  # set by Agent after construction
 
     @property
     def think_once_pending(self) -> bool:
@@ -146,11 +155,54 @@ class CommandHandler:
             case "/help":
                 return CommandResult(output=HELP_TEXT)
 
+            case "/code":
+                import subprocess
+                ws = str(self.config.workspace)
+                try:
+                    subprocess.Popen(["code", ws])
+                    return CommandResult(output=f"Opening VS Code: {ws}")
+                except FileNotFoundError:
+                    return CommandResult(output="Error: 'code' not found. Install the VS Code CLI via: Shell Command: Install 'code' command in PATH")
+
+            case "/todo":
+                return self._todo_command(arg)
+
             case "/quit" | "/exit" | "/q":
                 return CommandResult(output="Goodbye.", should_quit=True)
 
             case _:
                 return CommandResult(output=f"Unknown command: {cmd}. Type /help for available commands.")
+
+    def _todo_command(self, arg: str) -> CommandResult:
+        if self.tools is None:
+            return CommandResult(output="Todo not available.")
+        sub_parts = arg.split(maxsplit=1)
+        sub = sub_parts[0].lower() if sub_parts else ""
+        rest = sub_parts[1] if len(sub_parts) > 1 else ""
+
+        match sub:
+            case "" | "list":
+                output = self.tools._todo("list")
+            case "clear":
+                self.tools._save_todo([])
+                output = "All tasks cleared."
+            case "add":
+                if not rest:
+                    return CommandResult(output="Usage: /todo add <task text>")
+                output = self.tools._todo("add", task=rest)
+            case "done":
+                try:
+                    output = self.tools._todo("complete", task_id=int(rest))
+                except ValueError:
+                    return CommandResult(output="Usage: /todo done <id>")
+            case "remove":
+                try:
+                    output = self.tools._todo("remove", task_id=int(rest))
+                except ValueError:
+                    return CommandResult(output="Usage: /todo remove <id>")
+            case _:
+                return CommandResult(output="Usage: /todo [list|clear|add TEXT|done ID|remove ID]")
+        return CommandResult(output=output, refresh_status=True)
 
     def _config_show(self) -> str:
         think_state = "on" if self.config.model.thinking else "off"

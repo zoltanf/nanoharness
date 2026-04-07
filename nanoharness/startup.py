@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from typing import Callable
 
 from .config import Config
 from .ollama import OllamaClient
+
+# Minimum Ollama server version required for reliable tool-call support.
+# Versions below this have known bugs (e.g. tool-call parsing, thinking field).
+MIN_OLLAMA_VERSION = (0, 7, 0)
 
 
 INSTALL_INSTRUCTIONS = """
@@ -20,6 +25,54 @@ To install Ollama:
 After installing, start Ollama:
   ollama serve
 """
+
+
+def _parse_version(v: str) -> tuple[int, ...]:
+    """Parse 'X.Y.Z' into (X, Y, Z). Returns (0, 0, 0) on failure."""
+    m = re.search(r'(\d+)\.(\d+)\.(\d+)', v)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return (0, 0, 0)
+
+
+async def check_version(client: OllamaClient) -> list[str]:
+    """Fetch Ollama server version and return a list of warning strings (empty = OK)."""
+    warnings: list[str] = []
+    server_ver_str = await client.get_version()
+    server_ver = _parse_version(server_ver_str)
+    min_str = ".".join(str(x) for x in MIN_OLLAMA_VERSION)
+
+    if server_ver == (0, 0, 0):
+        warnings.append(f"Could not determine Ollama server version.")
+    elif server_ver < MIN_OLLAMA_VERSION:
+        warnings.append(
+            f"Ollama server version {server_ver_str} is below the recommended minimum {min_str}. "
+            f"Known bugs: tool-call parsing, thinking field support. Run: ollama --version && ollama serve"
+        )
+
+    # Also check for CLI/server mismatch
+    try:
+        import asyncio
+        result = await asyncio.create_subprocess_exec(
+            "ollama", "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await result.communicate()
+        cli_output = (out or err or b"").decode().strip()
+        m = re.search(r'(\d+\.\d+\.\d+)', cli_output)
+        if m:
+            cli_ver_str = m.group(1)
+            cli_ver = _parse_version(cli_ver_str)
+            if cli_ver != server_ver and server_ver != (0, 0, 0):
+                warnings.append(
+                    f"Ollama CLI version ({cli_ver_str}) differs from server version ({server_ver_str}). "
+                    f"Restart 'ollama serve' to pick up the updated binary."
+                )
+    except FileNotFoundError:
+        pass  # ollama CLI not on PATH
+
+    return warnings
 
 
 async def check_ollama(config: Config, client: OllamaClient) -> bool:

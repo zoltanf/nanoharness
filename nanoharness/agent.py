@@ -64,6 +64,7 @@ class Agent:
             max_chars=config.agent.max_output_chars,
         )
         self.commands = CommandHandler(config)
+        self.commands.tools = self.tools
         self.history: list[dict] = []
         self._step_count = 0
         self._prev_thinking = False

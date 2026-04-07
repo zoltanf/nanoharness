@@ -577,15 +577,17 @@ function sendMessage() {
 
 // --- Inline hints & tab completion ---
 const hintEl = document.getElementById('hint-line');
-const COMMANDS = ['/think', '/workspace', '/clear', '/config', '/info', '/help', '/quit'];
+const COMMANDS = ['/think', '/workspace', '/code', '/clear', '/config', '/info', '/todo', '/help', '/quit'];
 const COMMAND_HINTS = {
-  '/think':     ['on|off|once',  'Toggle thinking mode'],
-  '/workspace': ['<dir>',        'Switch workspace directory'],
-  '/clear':     ['',             'Clear conversation history'],
-  '/config':    ['',             'Show current configuration'],
-  '/info':      ['',             'Show model details from Ollama'],
-  '/help':      ['',             'Show available commands'],
-  '/quit':      ['',             'Exit NanoHarness'],
+  '/think':     ['on|off|once',               'Toggle thinking mode'],
+  '/workspace': ['<dir>',                     'Switch workspace directory'],
+  '/code':      ['',                          'Open workspace in VS Code'],
+  '/clear':     ['',                          'Clear conversation history'],
+  '/config':    ['',                          'Show current configuration'],
+  '/info':      ['',                          'Show model details from Ollama'],
+  '/todo':      ['list|clear|add|done|remove','Manage task list'],
+  '/help':      ['',                          'Show available commands'],
+  '/quit':      ['',                          'Exit NanoHarness'],
 };
 const THINK_OPTIONS = ['on', 'off', 'once'];
 

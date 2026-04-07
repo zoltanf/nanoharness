@@ -21,9 +21,10 @@ TOOL_SCHEMAS: list[dict] = [
     }},
     {"type": "function", "function": {
         "name": "read_file",
-        "description": "Read file contents",
+        "description": "Read file contents. Use offset to start reading from a byte position (e.g. to continue after truncation).",
         "parameters": {"type": "object", "properties": {
             "path": {"type": "string"},
+            "offset": {"type": "integer", "description": "Byte offset to start reading from (default: 0)"},
             "max_chars": {"type": "integer"},
         }, "required": ["path"]},
     }},
@@ -95,7 +96,8 @@ class ToolExecutor:
                 case "read_file":
                     return self._read_file(
                         arguments.get("path", ""),
-                        arguments.get("max_chars", 4000),
+                        arguments.get("max_chars", 0),
+                        arguments.get("offset", 0),
                     )
                 case "write_file":
                     return self._write_file(
@@ -147,13 +149,22 @@ class ToolExecutor:
             result += f"\nexit code: {proc.returncode}"
         return result.strip() or "(no output)"
 
-    def _read_file(self, path: str, max_chars: int = 4000) -> str:
+    def _read_file(self, path: str, max_chars: int = 0, offset: int = 0) -> str:
         p = self._safe_path(path)
+        limit = min(max_chars, self.max_chars) if max_chars else self.max_chars
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            size = p.stat().st_size
+            with open(p, encoding="utf-8", errors="replace") as f:
+                if offset:
+                    f.seek(offset)
+                text = f.read(limit + 1)
         except (FileNotFoundError, IsADirectoryError, OSError) as e:
             return f"Error: {e}"
-        return _clip(text, min(max_chars, self.max_chars))
+        prefix = f"[offset {offset}] " if offset else ""
+        if len(text) > limit:
+            end = offset + limit
+            return prefix + text[:limit] + f"\n...[truncated, showing bytes {offset}-{end} of {size}]"
+        return prefix + text
 
     def _write_file(self, path: str, content: str) -> str:
         p = self._safe_path(path)
@@ -264,3 +275,15 @@ class ToolExecutor:
         if pending:
             summary += f" | Next: {pending[0]}"
         return summary
+
+    def get_todo_parts(self) -> tuple[str | None, str | None]:
+        """Return (next_task, progress) for status bar display. Both None if no tasks."""
+        tasks = self._load_todo()
+        if not tasks:
+            return None, None
+        done = sum(1 for t in tasks if t["done"])
+        total = len(tasks)
+        pending = [t["task"] for t in tasks if not t["done"]]
+        progress = f"Tasks: {done}/{total} done"
+        next_task = pending[0] if pending else None
+        return next_task, progress

@@ -16,7 +16,7 @@ except ImportError:
 from .config import load_config, parse_args
 from . import BANNER as _BANNER
 from .ollama import OllamaClient
-from .startup import check_ollama, check_model, print_install_instructions
+from .startup import check_ollama, check_model, check_version, print_install_instructions
 from .agent import Agent, StreamEvent
 from .completion import is_incomplete_command, hint_for_input
 from . import logging as log
@@ -107,8 +107,24 @@ async def run_repl(agent: Agent) -> int:
     return 0
 
 
+def _check_workspace(config) -> bool:
+    """If workspace doesn't exist, prompt user to create it. Returns True to proceed."""
+    ws = config.workspace
+    if ws.is_dir():
+        return True
+    answer = input(f"Workspace directory does not exist: {ws}\nCreate it? [Y/n] ").strip().lower()
+    if answer in ("", "y", "yes"):
+        ws.mkdir(parents=True, exist_ok=True)
+        print(f"Created {ws}")
+        return True
+    return False
+
+
 async def async_main() -> int:
     config, args = load_config()
+
+    if not _check_workspace(config):
+        return 1
 
     # Initialize logging early
     session_id = log.init_logging(enabled=config.debug)
@@ -126,6 +142,10 @@ async def async_main() -> int:
         if not await check_model(config, client):
             print(f"Cannot proceed without model '{config.model.name}'.")
             return 1
+
+        version_warnings = await check_version(client)
+        for w in version_warnings:
+            print(f"WARNING: {w}", file=sys.stderr)
 
         # Log Ollama server diagnostics (version, running models, version mismatch)
         if config.debug:

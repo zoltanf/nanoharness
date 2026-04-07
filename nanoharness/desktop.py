@@ -58,6 +58,11 @@ def main_desktop() -> int:
     from . import logging as log
 
     config, _args = load_config()
+
+    from .__main__ import _check_workspace
+    if not _check_workspace(config):
+        return 1
+
     log.init_logging(enabled=config.debug)
     log.log_config(config)
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-COMMANDS = ["/think", "/workspace", "/clear", "/config", "/info", "/help", "/quit"]
+COMMANDS = ["/think", "/workspace", "/code", "/clear", "/config", "/info", "/todo", "/help", "/quit"]
 
 THINK_OPTIONS = ["on", "off", "once"]
 SAFETY_OPTIONS = ["workspace", "unrestricted", "confirm"]
@@ -48,13 +48,15 @@ def is_incomplete_command(line: str) -> bool:
 
 # Maps each command to (arg_hint, description)
 COMMAND_HINTS: dict[str, tuple[str, str]] = {
-    "/think":     ("on|off|once", "Toggle thinking mode"),
-    "/workspace": ("<dir>",       "Switch workspace directory"),
-    "/clear":     ("",            "Clear conversation history"),
-    "/config":    ("[set KEY VAL]", "Show/edit configuration"),
-    "/info":      ("",             "Show model details from Ollama"),
-    "/help":      ("",            "Show available commands"),
-    "/quit":      ("",            "Exit NanoHarness"),
+    "/think":     ("on|off|once",               "Toggle thinking mode"),
+    "/workspace": ("<dir>",                     "Switch workspace directory"),
+    "/code":      ("",                          "Open workspace in VS Code"),
+    "/clear":     ("",                          "Clear conversation history"),
+    "/config":    ("[set KEY VAL]",             "Show/edit configuration"),
+    "/info":      ("",                          "Show model details from Ollama"),
+    "/todo":      ("[list|clear|add|done|remove]", "Manage task list"),
+    "/help":      ("",                          "Show available commands"),
+    "/quit":      ("",                          "Exit NanoHarness"),
 }
 
 

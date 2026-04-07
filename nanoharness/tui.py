@@ -49,6 +49,13 @@ class CompletingInput(TextArea):
     Submit with Enter. Ctrl+J inserts a newline (terminals can't distinguish Shift/Alt+Enter).
     """
 
+    BINDINGS = [
+        Binding("pageup",   "scroll_chat_up",   show=False),
+        Binding("pagedown", "scroll_chat_down", show=False),
+        Binding("home",     "scroll_chat_home", show=False),
+        Binding("end",      "scroll_chat_end",  show=False),
+    ]
+
     class Submitted(Message):
         def __init__(self, value: str) -> None:
             super().__init__()
@@ -62,6 +69,21 @@ class CompletingInput(TextArea):
         self._tab_prefix: str = ""
 
     def _on_key(self, event: Key) -> None:
+        if event.key == "up":
+            row = self.cursor_location[0]
+            if row == 0:
+                event.prevent_default()
+                event.stop()
+                self.app.query_one("#chat-log", VerticalScroll).scroll_up(animate=False)
+                return
+        if event.key == "down":
+            lines = self.text.split("\n")
+            row = self.cursor_location[0]
+            if row >= len(lines) - 1:
+                event.prevent_default()
+                event.stop()
+                self.app.query_one("#chat-log", VerticalScroll).scroll_down(animate=False)
+                return
         if event.key == "enter":
             event.prevent_default()
             event.stop()
@@ -135,6 +157,18 @@ class CompletingInput(TextArea):
         self.replace(new_line, (row, 0), (row, len(current_line)))
         self.cursor_location = (row, len(new_line))
 
+    def action_scroll_chat_up(self) -> None:
+        self.app.query_one("#chat-log", VerticalScroll).scroll_page_up(animate=False)
+
+    def action_scroll_chat_down(self) -> None:
+        self.app.query_one("#chat-log", VerticalScroll).scroll_page_down(animate=False)
+
+    def action_scroll_chat_home(self) -> None:
+        self.app.query_one("#chat-log", VerticalScroll).scroll_home(animate=False)
+
+    def action_scroll_chat_end(self) -> None:
+        self.app.query_one("#chat-log", VerticalScroll).scroll_end(animate=False)
+
 
 class SpinnerLine(Static):
     """Animated spinner shown while waiting for model response."""
@@ -177,7 +211,7 @@ class StatusBar(Static):
         self._update_text()
 
     # Column widths for the 4-column layout
-    _COL = (16, 16, 10)  # model, context, think — workspace fills the rest
+    _COL = (16, 10, 10)  # model, context, think — workspace fills the rest
 
     def _update_text(self) -> None:
         import os
@@ -208,20 +242,24 @@ class StatusBar(Static):
         if ws.startswith(home):
             ws = "~" + ws[len(home):]
 
-        # --- todo (appended to workspace column) ---
-        todo = self.agent.tools.get_todo_summary()
-        if todo:
-            ws = f"{ws}  [{todo}]"
+        # --- todo (own column) ---
+        next_task, progress = self.agent.tools.get_todo_parts()
 
         w0, w1, w2 = self._COL
         sep = " │ "
 
+        # Workspace column width: wide enough for both the path and the safety label
+        safety_label = f"safety: {cfg.safety.level}"
+        w3 = max(len(ws), len(safety_label))
+
         # Row 1 — values (all bold, uniform colour)
+        todo_val = f"Next: {next_task}" if next_task else ""
         val_row = (
             f" [bold]{model_val:<{w0}}[/]{sep}"
             f"[{ctx_style}]{ctx_val:^{w1}}[/]{sep}"
             f"[bold]{think_val:^{w2}}[/]{sep}"
-            f"[bold]{ws}[/]"
+            f"[bold]{ws:<{w3}}[/]"
+            + (f"{sep}[bold]{todo_val}[/]" if progress else "")
         )
 
         # Row 2 — labels (same separators as row 1)
@@ -229,7 +267,8 @@ class StatusBar(Static):
             f" [dim]{'model':<{w0}}[/]{sep}"
             f"[dim]{'context':^{w1}}[/]{sep}"
             f"[dim]{'think':^{w2}}[/]{sep}"
-            f"[dim]safety: {cfg.safety.level}[/]"
+            f"[dim]{safety_label:<{w3}}[/]"
+            + (f"{sep}[dim]{progress}[/]" if progress else "")
         )
 
         self.update(f"{val_row}\n{lbl_row}")
@@ -243,6 +282,7 @@ class NanoHarnessApp(App):
     #chat-log {
         height: 1fr;
         padding: 0 1;
+        scrollbar-gutter: stable;
     }
     #chat-log > .chat-msg {
         width: 100%;
@@ -331,7 +371,16 @@ class NanoHarnessApp(App):
     def on_mount(self) -> None:
         self._show_welcome()
         self.query_one(SpinnerLine).display = False
+        # Disable focus on the chat scroll so clicks don't steal focus from input
+        chat_log = self.query_one("#chat-log", VerticalScroll)
+        chat_log.can_focus = False
         self.query_one(CompletingInput).focus()
+
+    def on_focus(self, event: object) -> None:
+        """Always redirect focus back to the input box."""
+        inp = self.query_one(CompletingInput)
+        if self.focused is not inp:
+            self.set_timer(0, inp.focus)
 
     async def on_completing_input_submitted(self, event: CompletingInput.Submitted) -> None:
         user_input = event.value.strip()

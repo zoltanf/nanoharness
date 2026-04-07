@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How Tool Calls Work in LLMs</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+    padding: 32px 20px 60px;
+  }
+  .container { max-width: 860px; margin: 0 auto; }
+
+  h1 {
+    text-align: center;
+    font-size: 1.7rem;
+    font-weight: 700;
+    background: linear-gradient(135deg, #60a5fa, #a78bfa, #f472b6);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 0.85rem;
+    color: #94a3b8;
+    margin-bottom: 36px;
+  }
+
+  /* ─── Step cards ─── */
+  .step {
+    position: relative;
+    display: flex;
+    gap: 20px;
+    margin-bottom: 12px;
+    opacity: 0;
+    transform: translateY(24px);
+    animation: fadeUp 0.5s ease-out forwards;
+  }
+  .step:nth-child(1) { animation-delay: 0.1s; }
+  .step:nth-child(2) { animation-delay: 0.35s; }
+  .step:nth-child(3) { animation-delay: 0.6s; }
+  .step:nth-child(4) { animation-delay: 0.85s; }
+  .step:nth-child(5) { animation-delay: 1.1s; }
+
+  @keyframes fadeUp {
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .step-number {
+    flex-shrink: 0;
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 1rem;
+    color: #fff;
+    margin-top: 18px;
+  }
+
+  .step-body {
+    flex: 1;
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 14px;
+    padding: 20px 24px;
+    transition: border-color 0.25s, box-shadow 0.25s;
+  }
+  .step-body:hover {
+    border-color: #475569;
+    box-shadow: 0 0 20px rgba(96,165,250,0.08);
+  }
+
+  .step-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+
+  .actors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 10px;
+  }
+  .actor {
+    flex: 1;
+    min-width: 200px;
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .actor-label {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .actor p {
+    font-size: 0.82rem;
+    color: #cbd5e1;
+    line-height: 1.5;
+  }
+
+  code, .code-block {
+    font-family: 'SF Mono', 'Fira Code', 'JetBrains Mono', monospace;
+    font-size: 0.78rem;
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: block;
+    margin-top: 8px;
+    color: #93c5fd;
+    line-height: 1.55;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  .arrow-connector {
+    display: flex;
+    justify-content: center;
+    margin: 0;
+    opacity: 0;
+    animation: fadeUp 0.4s ease-out forwards;
+  }
+  .arrow-connector:nth-of-type(2) { animation-delay: 0.25s; }
+  .arrow-connector:nth-of-type(4) { animation-delay: 0.5s; }
+  .arrow-connector:nth-of-type(6) { animation-delay: 0.75s; }
+  .arrow-connector:nth-of-type(8) { animation-delay: 1.0s; }
+
+  .arrow-connector svg { margin-left: 28px; }
+
+  /* colors per step */
+  .c1 .step-number { background: #3b82f6; }
+  .c1 .step-title { color: #60a5fa; }
+  .c1 .actor-label { color: #60a5fa; }
+
+  .c2 .step-number { background: #f59e0b; }
+  .c2 .step-title { color: #fbbf24; }
+  .c2 .actor-label { color: #fbbf24; }
+
+  .c3 .step-number { background: #22c55e; }
+  .c3 .step-title { color: #4ade80; }
+  .c3 .actor-label { color: #4ade80; }
+
+  .c4 .step-number { background: #a855f7; }
+  .c4 .step-title { color: #c084fc; }
+  .c4 .actor-label { color: #c084fc; }
+
+  /* key insight */
+  .insight {
+    margin-top: 28px;
+    background: linear-gradient(135deg, rgba(96,165,250,0.08), rgba(167,139,250,0.08));
+    border: 1px solid #334155;
+    border-radius: 14px;
+    padding: 20px 24px;
+    opacity: 0;
+    animation: fadeUp 0.5s ease-out 1.3s forwards;
+  }
+  .insight h3 {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #a78bfa;
+    margin-bottom: 8px;
+  }
+  .insight p {
+    font-size: 0.82rem;
+    color: #94a3b8;
+    line-height: 1.6;
+  }
+  .insight strong { color: #e2e8f0; }
+
+  /* loop indicator */
+  .loop-note {
+    text-align: center;
+    font-size: 0.75rem;
+    color: #64748b;
+    margin: 4px 0 0 28px;
+    font-style: italic;
+    opacity: 0;
+    animation: fadeUp 0.4s ease-out 0.9s forwards;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>How Tool Calls Work in LLMs</h1>
+  <p class="subtitle">The request → tool use → response loop</p>
+
+  <!-- STEP 1 -->
+  <div class="step c1">
+    <div class="step-number">1</div>
+    <div class="step-body">
+      <div class="step-title">📨 User sends a prompt + tool definitions</div>
+      <div class="actors">
+        <div class="actor">
+          <div class="actor-label">👤 User</div>
+          <p>"What's the weather in Vienna today?"</p>
+        </div>
+        <div class="actor">
+          <div class="actor-label">⚙️ API / Orchestrator</div>
+          <p>Wraps the message with available tool schemas and sends everything to the LLM.</p>
+          <code>{
+  "messages": [{ "role": "user", "content": "..." }],
+  "tools": [
+    { "name": "get_weather",
+      "description": "Get current weather",
+      "input_schema": { "location": "string" }
+    }
+  ]
+}</code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-connector"><svg width="24" height="28"><path d="M12 0 v20 M6 16 l6 8 l6-8" stroke="#475569" stroke-width="2" fill="none"/></svg></div>
+
+  <!-- STEP 2 -->
+  <div class="step c2">
+    <div class="step-number">2</div>
+    <div class="step-body">
+      <div class="step-title">🧠 LLM decides to call a tool</div>
+      <p style="font-size:0.82rem;color:#94a3b8;margin-bottom:8px;">Instead of answering directly, the model emits a structured <strong style="color:#fbbf24;">tool_use</strong> block:</p>
+      <code>{
+  "type": "tool_use",
+  "id": "call_abc123",
+  "name": "get_weather",
+  "input": { "location": "Vienna, AT" }
+}</code>
+      <p style="font-size:0.75rem;color:#64748b;margin-top:10px;font-style:italic;">⚠️ The model produces JSON — it does NOT execute anything itself.</p>
+    </div>
+  </div>
+
+  <div class="arrow-connector"><svg width="24" height="28"><path d="M12 0 v20 M6 16 l6 8 l6-8" stroke="#475569" stroke-width="2" fill="none"/></svg></div>
+
+  <!-- STEP 3 -->
+  <div class="step c3">
+    <div class="step-number">3</div>
+    <div class="step-body">
+      <div class="step-title">⚙️ Your code executes the tool &amp; returns the result</div>
+      <div class="actors">
+        <div class="actor">
+          <div class="actor-label">🔧 Execution</div>
+          <p>Your orchestrator parses the <code style="display:inline;padding:2px 6px;margin:0;border:none;font-size:0.78rem;">tool_use</code> block, calls the real external API, and gets the result.</p>
+        </div>
+        <div class="actor">
+          <div class="actor-label">📨 Feed result back</div>
+          <p>Append a <code style="display:inline;padding:2px 6px;margin:0;border:none;font-size:0.78rem;">tool_result</code> message and call the LLM again:</p>
+          <code>{
+  "role": "user",
+  "content": [{
+    "type": "tool_result",
+    "tool_use_id": "call_abc123",
+    "content": "18°C, partly cloudy"
+  }]
+}</code>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-connector"><svg width="24" height="28"><path d="M12 0 v20 M6 16 l6 8 l6-8" stroke="#475569" stroke-width="2" fill="none"/></svg></div>
+  <p class="loop-note">↻ Steps 2–3 may repeat if the model needs multiple tools</p>
+  <div class="arrow-connector"><svg width="24" height="28"><path d="M12 0 v20 M6 16 l6 8 l6-8" stroke="#475569" stroke-width="2" fill="none"/></svg></div>
+
+  <!-- STEP 4 -->
+  <div class="step c4">
+    <div class="step-number">4</div>
+    <div class="step-body">
+      <div class="step-title">💬 LLM generates the final natural-language answer</div>
+      <div class="actors">
+        <div class="actor">
+          <div class="actor-label">🧠 LLM response</div>
+          <p>"It's currently 18 °C and partly cloudy in Vienna today — light jacket weather!"</p>
+        </div>
+        <div class="actor">
+          <div class="actor-label">👤 User</div>
+          <p>Sees a clean, natural answer — the tool plumbing is invisible.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- KEY INSIGHT -->
+  <div class="insight">
+    <h3>💡 Key Takeaways</h3>
+    <p>
+      <strong>The LLM never executes tools.</strong> It only produces structured JSON describing <em>which</em> tool to call and <em>what arguments</em> to pass. Your application code (the "orchestrator") is responsible for actually running the function, then feeding the result back into the next API call.<br><br>
+      <strong>It's a loop, not a single call.</strong> If the model needs data from multiple tools — or one tool's output informs the next — the orchestrator keeps looping (prompt → tool_use → execute → tool_result → prompt …) until the model returns a plain text response.<br><br>
+      <strong>Tool schemas act like a menu.</strong> The model picks from the tools you provide based on their names, descriptions, and parameter schemas. Good descriptions = better tool selection.
+    </p>
+  </div>
+</div>
+</body>
+</html>
