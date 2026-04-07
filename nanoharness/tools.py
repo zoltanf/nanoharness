@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import json
+import os
 import sys
-from contextlib import redirect_stdout, redirect_stderr
+import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 # Ultra-terse tool schemas for minimal token usage
 TOOL_SCHEMAS: list[dict] = [
@@ -62,6 +62,36 @@ TOOL_SCHEMAS: list[dict] = [
 ]
 
 
+def format_confirm_preview(tool_name: str, args: dict) -> str:
+    """Return a short human-readable preview of a tool call for confirmation prompts."""
+    if tool_name == "bash":
+        cmd = args.get("command", "")
+        preview = cmd[:200] + ("..." if len(cmd) > 200 else "")
+        return f"bash\n  $ {preview}"
+    if tool_name == "python_exec":
+        lines = args.get("code", "").splitlines()
+        shown = lines[:10]
+        rest = len(lines) - 10
+        code_preview = "\n  ".join(shown)
+        suffix = f"\n  ... ({rest} more lines)" if rest > 0 else ""
+        return f"python_exec\n  {code_preview}{suffix}"
+    if tool_name == "write_file":
+        path = args.get("path", "")
+        size = len(args.get("content", ""))
+        return f"write_file\n  path: {path}  size: {size} bytes"
+    return tool_name
+
+
+_SENSITIVE_PREFIXES = ("AWS_", "AZURE_", "GOOGLE_", "GCP_", "GITHUB_")
+_SENSITIVE_SUBSTRINGS = ("_API_KEY", "_SECRET", "_TOKEN", "_PASSWORD", "_CREDENTIAL", "_DSN")
+_SENSITIVE_EXACT = frozenset({
+    "SSH_AUTH_SOCK", "SSH_AGENT_PID", "DATABASE_URL", "PGPASSWORD",
+    "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+})
+
+_CONFIRM_TOOLS = frozenset({"bash", "python_exec", "write_file"})
+
+
 def _clip(text: str, max_chars: int) -> str:
     if len(text) <= max_chars:
         return text
@@ -75,21 +105,41 @@ class ToolExecutor:
         self.timeout = timeout
         self.max_chars = max_chars
         self._todo_file = workspace / ".nanoharness" / "todo.json"
+        self.confirm_fn: Callable[[str, dict], Awaitable[bool]] | None = None
 
     def _safe_path(self, path: str) -> Path:
-        """Resolve path and ensure it stays within workspace (if safety != unrestricted)."""
+        """Resolve path and ensure it stays within workspace (if safety != none)."""
         p = Path(path)
         if not p.is_absolute():
             p = self.workspace / p
         p = p.resolve()
-        if self.safety != "unrestricted":
+        if self.safety != "none":
             if p != self.workspace and self.workspace not in p.parents:
                 raise ValueError(f"Path escapes workspace: {path}")
         return p
 
-    async def execute(self, name: str, arguments: dict[str, Any]) -> str:
+    def _scrubbed_env(self) -> dict[str, str]:
+        """Return a copy of os.environ with sensitive vars stripped and HOME overridden."""
+        env = {}
+        for k, v in os.environ.items():
+            ku = k.upper()
+            if ku in _SENSITIVE_EXACT:
+                continue
+            if any(ku.startswith(p) for p in _SENSITIVE_PREFIXES):
+                continue
+            if any(s in ku for s in _SENSITIVE_SUBSTRINGS):
+                continue
+            env[k] = v
+        env["HOME"] = str(self.workspace)
+        return env
+
+    async def execute(self, name: str, arguments: dict[str, Any], *, confirm: bool = True) -> str:
         """Execute a tool by name and return the result as a string."""
         try:
+            if confirm and self.safety == "confirm" and name in _CONFIRM_TOOLS and self.confirm_fn:
+                allowed = await self.confirm_fn(name, arguments)
+                if not allowed:
+                    return "User denied this action."
             match name:
                 case "bash":
                     return await self._bash(arguments.get("command", ""))
@@ -107,7 +157,7 @@ class ToolExecutor:
                 case "list_dir":
                     return self._list_dir(arguments.get("path", "."))
                 case "python_exec":
-                    return self._python_exec(arguments.get("code", ""))
+                    return await self._python_exec(arguments.get("code", ""))
                 case "todo":
                     return self._todo(
                         arguments.get("action", "list"),
@@ -122,10 +172,7 @@ class ToolExecutor:
     async def _bash(self, command: str) -> str:
         if not command.strip():
             return "Error: empty command"
-        env: dict[str, str] | None = None
-        if self.safety == "workspace":
-            import os
-            env = {**os.environ, "HOME": str(self.workspace)}
+        env = self._scrubbed_env() if self.safety != "none" else None
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
@@ -168,6 +215,8 @@ class ToolExecutor:
 
     def _write_file(self, path: str, content: str) -> str:
         p = self._safe_path(path)
+        if ".git" in p.relative_to(self.workspace).parts:
+            return "Error: write_file cannot modify .git directory"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
         return f"Wrote {len(content)} bytes to {p.relative_to(self.workspace)}"
@@ -187,24 +236,37 @@ class ToolExecutor:
             return "(empty directory)"
         return "\n".join(entries)
 
-    def _python_exec(self, code: str) -> str:
+    async def _python_exec(self, code: str) -> str:
         if not code.strip():
             return "Error: empty code"
-        stdout_buf = io.StringIO()
-        stderr_buf = io.StringIO()
-        env: dict[str, Any] = {"__name__": "__nano_exec__"}
+        env = self._scrubbed_env() if self.safety != "none" else None
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+            f.write(code)
+            tmp_path = f.name
         try:
-            with redirect_stdout(stdout_buf), redirect_stderr(stderr_buf):
-                exec(code, env)
-        except Exception as e:
-            stderr_buf.write(f"\n{type(e).__name__}: {e}")
-        out = stdout_buf.getvalue()
-        err = stderr_buf.getvalue()
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, tmp_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self.workspace),
+                env=env,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return f"Error: python_exec timed out after {self.timeout}s"
+        finally:
+            os.unlink(tmp_path)
+        out = stdout.decode("utf-8", errors="replace") if stdout else ""
+        err = stderr.decode("utf-8", errors="replace") if stderr else ""
         result = ""
         if out:
             result += _clip(out, self.max_chars)
         if err:
             result += f"\nstderr: {_clip(err, self.max_chars)}"
+        if proc.returncode != 0:
+            result += f"\nexit code: {proc.returncode}"
         return result.strip() or "(no output)"
 
     def _load_todo(self) -> list[dict]:

@@ -16,7 +16,14 @@ from .commands import CommandHandler
 from . import logging as log
 
 
-SYSTEM_PROMPT = "You are a coding agent. Use tools to complete tasks. Be direct and concise.\nWorking directory: {workspace}\nSafety: {safety} — all file and shell operations must stay within the working directory."
+SYSTEM_PROMPT = (
+    "You are a coding agent. Use tools to complete tasks. Be direct and concise.\n"
+    "Working directory: {workspace}\n"
+    "Safety: {safety} — "
+    "confirm: workspace-contained + user must approve bash/python/write; "
+    "workspace: workspace-contained, env scrubbed; "
+    "none: no restrictions."
+)
 
 FALLBACK_SYSTEM_PROMPT = (
     "You are a coding agent. Accomplish the task by writing bash commands or code.\n"
@@ -365,7 +372,7 @@ class Agent:
                     tool_args={"command": shell_cmd},
                 )
                 t0 = time.monotonic()
-                shell_result = await self.tools.execute("bash", {"command": shell_cmd})
+                shell_result = await self.tools.execute("bash", {"command": shell_cmd}, confirm=False)
                 log.log_tool_exec_end("bash_shell", "shell", shell_result, time.monotonic() - t0)
                 yield StreamEvent(type="tool_result", text=shell_result, tool_name="bash")
                 yield StreamEvent(type="done")

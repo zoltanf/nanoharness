@@ -25,6 +25,7 @@ class CommandResult:
 HELP_TEXT = """
 Commands:
   /think [on|off|once]        Toggle thinking mode; append to a message for one turn
+  /safety [confirm|workspace|none]  Show or set safety level for this session
   /workspace [DIR]            Show or switch workspace directory
   /code                       Open workspace in VS Code
   /lazygit                    Open lazygit in a new terminal window
@@ -211,6 +212,24 @@ class CommandHandler:
             case "/todo":
                 return self._todo_command(arg)
 
+            case "/safety":
+                if not arg:
+                    level = self.config.safety.level
+                    return CommandResult(
+                        output=f"Safety: {level}  (options: confirm | workspace | none)\n"
+                               f"  confirm   — workspace restrictions + confirmation for bash/python/write\n"
+                               f"  workspace — workspace containment + env scrubbing (default)\n"
+                               f"  none      — no restrictions\n"
+                               f"Use /config set safety.level <value> to save as startup default.",
+                        refresh_status=True,
+                    )
+                if arg not in ("confirm", "workspace", "none"):
+                    return CommandResult(output="Usage: /safety [confirm|workspace|none]")
+                self.config.safety.level = arg
+                if self.tools:
+                    self.tools.safety = arg
+                return CommandResult(output=f"Safety: {arg}", refresh_status=True)
+
             case "/quit" | "/exit" | "/q":
                 return CommandResult(output="Goodbye.", should_quit=True)
 
@@ -260,7 +279,7 @@ class CommandHandler:
             f"  agent.max_steps       = {self.config.agent.max_steps}",
             f"  agent.timeout_seconds = {self.config.agent.timeout_seconds}",
             f"  agent.max_output_chars= {self.config.agent.max_output_chars}",
-            f"  safety.level          = {self.config.safety.level}",
+            f"  safety.level          = {self.config.safety.level}  (use /safety to change for this session)",
             f"  ollama.base_url       = {self.config.ollama.base_url}",
             f"  workspace             = {self.config.workspace}  (use /workspace to change)",
             "",
@@ -309,8 +328,8 @@ class CommandHandler:
                 except ValueError:
                     return f"Invalid value '{value}'. Must be an integer (e.g. 8000 or 8k)."
             case "safety.level":
-                if value not in ("workspace", "unrestricted", "confirm"):
-                    return f"Invalid value '{value}'. Use: workspace / unrestricted / confirm"
+                if value not in ("confirm", "workspace", "none"):
+                    return f"Invalid value '{value}'. Use: confirm / workspace / none"
                 self.config.safety.level = value
             case "ollama.base_url":
                 self.config.ollama.base_url = value

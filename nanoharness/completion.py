@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/todo", "/help", "/quit", "/exit"]
+COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/todo", "/help", "/quit", "/exit", "/safety"]
 
 THINK_OPTIONS = ["on", "off", "once"]
 SAFETY_OPTIONS = ["workspace", "unrestricted", "confirm"]
@@ -59,6 +59,7 @@ COMMAND_HINTS: dict[str, tuple[str, str]] = {
     "/help":      ("",                          "Show available commands"),
     "/quit":      ("",                          "Exit NanoHarness"),
     "/exit":      ("",                          "Exit NanoHarness"),
+    "/safety":    ("confirm|workspace|none",    "Set session safety level"),
 }
 
 
@@ -79,7 +80,7 @@ def hint_for_input(line: str) -> str:
         parts = stripped.rsplit(None, 1)
         last_token = parts[-1] if parts else ""
         if last_token.startswith("/") and len(parts) > 1:
-            # Delegate hint to the inline command token
+            # Delegate to the inline command token
             return hint_for_input(last_token)
         return ""
 
@@ -139,10 +140,47 @@ def hint_for_input(line: str) -> str:
                 if matching:
                     return "  ".join(matching)
             return ""
+        # /safety with partial arg
+        if cmd_part == "/safety" and arg_part:
+            opts = [o for o in SAFETY_OPTIONS if o.startswith(arg_part)]
+            if opts:
+                return f"/safety {' | '.join(opts)}"
+            return ""
         # Just show the usage pattern
         return f"{cmd_part} {arg_hint}  {desc}" if desc else f"{cmd_part} {arg_hint}"
 
     return ""
+
+
+def abs_dir_matches(partial: str) -> list[str]:
+    """Complete directories anywhere on the filesystem (for /workspace command)."""
+    import os
+    try:
+        if not partial:
+            home = Path.home()
+            return sorted(
+                f"~/{e.name}/"
+                for e in home.iterdir()
+                if e.is_dir() and not e.name.startswith(".")
+            )
+        expanded = os.path.expanduser(partial)
+        p = Path(expanded)
+        parent = p.parent if p.is_absolute() else (Path.cwd() / partial).parent
+        prefix = p.name
+        if not parent.is_dir():
+            return []
+        home_str = str(Path.home())
+        matches = []
+        for entry in parent.iterdir():
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            if entry.name.startswith(prefix):
+                full = str(entry)
+                completion = ("~" + full[len(home_str):] if full.startswith(home_str) else full) + "/"
+                matches.append(completion)
+        return sorted(matches)
+    except OSError:
+        return []
 
 
 def dir_matches(base: Path, partial: str) -> list[str]:
@@ -229,18 +267,14 @@ def complete_line(workspace: Path, line: str) -> list[str]:
     if stripped.lower().startswith("/config "):
         rest = stripped[len("/config "):].lstrip()
         rest_parts = rest.split(maxsplit=2)
-        # Only handle "set" sub-command
         if not rest_parts or not "set".startswith(rest_parts[0].lower()):
             return ["/config set"]
         if len(rest_parts) == 1:
-            # Tab after "set" — suggest all keys
             return [f"/config set {k}" for k in CONFIG_KEYS]
         key_partial = rest_parts[1].lower() if len(rest_parts) >= 2 else ""
         matching_keys = [k for k in CONFIG_KEYS if k.startswith(key_partial)]
         if len(rest_parts) == 2:
-            # Still completing the key
             return [f"/config set {k}" for k in matching_keys]
-        # Completing the value for a known key
         key = rest_parts[1].lower()
         val_partial = rest_parts[2].lower() if len(rest_parts) > 2 else ""
         if key == "model.thinking":

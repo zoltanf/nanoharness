@@ -14,6 +14,7 @@ except ImportError:
     readline = None  # type: ignore[assignment]
 
 from .config import load_config, parse_args
+from .tools import format_confirm_preview
 from . import BANNER as _BANNER
 from .ollama import OllamaClient
 from .startup import check_ollama, check_model, check_version, print_install_instructions
@@ -45,9 +46,19 @@ def _setup_readline_completion(agent: Agent) -> None:
         readline.parse_and_bind("tab: complete")
 
 
+async def _repl_confirm(tool_name: str, args: dict) -> bool:
+    """Blocking y/n confirmation for REPL mode."""
+    preview = format_confirm_preview(tool_name, args)
+    sys.stdout.write(f"\nAllow {preview}? [y/N] ")
+    sys.stdout.flush()
+    answer = await asyncio.get_running_loop().run_in_executor(None, sys.stdin.readline)
+    return answer.strip().lower() == "y"
+
+
 async def run_repl(agent: Agent) -> int:
     """Basic REPL for testing without TUI."""
     _setup_readline_completion(agent)
+    agent.tools.confirm_fn = _repl_confirm
     print(_BANNER)
     print()
     print(f"v0.1.0 — {agent.config.model.name} — {agent.config.workspace}")
@@ -128,6 +139,12 @@ async def async_main() -> int:
 
     # Initialize logging early
     session_id = log.init_logging(enabled=config.debug)
+    if config.debug:
+        print(
+            "WARNING: debug logging enabled — tool arguments and message content "
+            "will be written to the log file.",
+            file=sys.stderr,
+        )
     log.log_config(config)
     log.log_startup("init", f"session={session_id} debug={config.debug}")
 

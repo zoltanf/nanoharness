@@ -255,6 +255,57 @@ class TestLazygitCommand:
         assert "Unsupported" in r.output
 
 
+class TestSafetyCommand:
+    def test_no_arg_shows_level(self, handler: CommandHandler):
+        r = handler.handle("/safety")
+        assert "workspace" in r.output
+        assert "confirm" in r.output
+        assert "none" in r.output
+
+    def test_set_none(self, handler: CommandHandler):
+        r = handler.handle("/safety none")
+        assert "none" in r.output
+        assert handler.config.safety.level == "none"
+
+    def test_set_confirm(self, handler: CommandHandler):
+        r = handler.handle("/safety confirm")
+        assert "confirm" in r.output
+        assert handler.config.safety.level == "confirm"
+
+    def test_set_workspace(self, handler: CommandHandler):
+        handler.config.safety.level = "none"
+        r = handler.handle("/safety workspace")
+        assert "workspace" in r.output
+        assert handler.config.safety.level == "workspace"
+
+    def test_invalid_level(self, handler: CommandHandler):
+        r = handler.handle("/safety unrestricted")
+        assert "Usage" in r.output
+        assert handler.config.safety.level == "workspace"  # unchanged
+
+    def test_updates_tools_executor(self, handler: CommandHandler, workspace):
+        from nanoharness.tools import ToolExecutor
+        handler.tools = ToolExecutor(workspace=workspace)
+        handler.handle("/safety none")
+        assert handler.tools.safety == "none"
+
+    def test_config_set_saves_valid_levels(self, handler: CommandHandler):
+        from unittest.mock import patch
+        with patch("nanoharness.config.write_config_toml"):
+            r = handler.handle("/config set safety.level none")
+            assert "Error" not in r.output
+            r = handler.handle("/config set safety.level confirm")
+            assert "Error" not in r.output
+            r = handler.handle("/config set safety.level workspace")
+            assert "Error" not in r.output
+
+    def test_config_set_rejects_unrestricted(self, handler: CommandHandler):
+        from unittest.mock import patch
+        with patch("nanoharness.config.write_config_toml"):
+            r = handler.handle("/config set safety.level unrestricted")
+            assert "Error" in r.output
+
+
 class TestUnknownCommand:
     def test_unknown(self, handler: CommandHandler):
         r = handler.handle("/foo")

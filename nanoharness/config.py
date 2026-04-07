@@ -33,7 +33,7 @@ class OllamaConfig:
 
 @dataclass
 class SafetyConfig:
-    level: str = "workspace"  # "workspace" | "unrestricted" | "confirm"
+    level: str = "workspace"  # "confirm" | "workspace" | "none"
 
 
 @dataclass
@@ -124,7 +124,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--think", action="store_true", default=None, help="Enable thinking mode")
     p.add_argument("--no-think", action="store_true", default=None, help="Disable thinking mode")
     p.add_argument("--max-steps", type=int, default=None, help="Max agent steps per turn")
-    p.add_argument("--safety", choices=["workspace", "unrestricted", "confirm"], default=None)
+    p.add_argument("--safety", choices=["confirm", "workspace", "none"], default=None)
     p.add_argument("--config", type=Path, default=None, help="Config file path")
     p.add_argument("--debug", action="store_true", default=False, help="Enable debug logging to ~/.nanoharness/debug/")
     p.add_argument("--tui", action="store_true", default=True, help="Launch Textual TUI (default)")

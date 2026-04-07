@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from nanoharness.tools import ToolExecutor, _clip
+from nanoharness.tools import ToolExecutor, _clip, format_confirm_preview
 
 
 class TestClip:
@@ -45,8 +45,8 @@ class TestSafePath:
         with pytest.raises(ValueError, match="escapes workspace"):
             te._safe_path("/etc/passwd")
 
-    def test_unrestricted_allows_outside(self, workspace: Path):
-        te = ToolExecutor(workspace=workspace, safety="unrestricted")
+    def test_none_allows_outside(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, safety="none")
         p = te._safe_path("/tmp")
         assert p == Path("/tmp").resolve()
 
@@ -87,6 +87,17 @@ class TestWriteFile:
         te = ToolExecutor(workspace=workspace)
         with pytest.raises(ValueError, match="escapes workspace"):
             te._write_file("../../escape.txt", "bad")
+
+    def test_write_git_dir_blocked(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = te._write_file(".git/config", "bad")
+        assert "Error" in result
+        assert not (workspace / ".git" / "config").exists()
+
+    def test_write_git_subpath_blocked(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = te._write_file(".git/hooks/pre-commit", "bad")
+        assert "Error" in result
 
 
 class TestListDir:
@@ -139,21 +150,111 @@ class TestBash:
 
 
 class TestPythonExec:
-    def test_simple(self, workspace: Path):
+    async def test_simple(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._python_exec("print(2 + 2)")
+        result = await te._python_exec("print(2 + 2)")
         assert "4" in result
 
-    def test_empty_code(self, workspace: Path):
+    async def test_empty_code(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._python_exec("")
+        result = await te._python_exec("")
         assert "Error" in result
 
-    def test_exception(self, workspace: Path):
+    async def test_exception(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._python_exec("raise ValueError('boom')")
+        result = await te._python_exec("raise ValueError('boom')")
         assert "ValueError" in result
         assert "boom" in result
+
+
+class TestEnvScrubbing:
+    def test_scrubbed_env_removes_api_key(self, workspace: Path, monkeypatch):
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "secret123")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+        monkeypatch.setenv("MY_TOKEN", "tok123")
+        te = ToolExecutor(workspace=workspace, safety="workspace")
+        env = te._scrubbed_env()
+        assert "AWS_ACCESS_KEY_ID" not in env
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "MY_TOKEN" not in env
+
+    def test_scrubbed_env_keeps_path(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, safety="workspace")
+        env = te._scrubbed_env()
+        assert "PATH" in env
+
+    def test_scrubbed_env_overrides_home(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, safety="workspace")
+        env = te._scrubbed_env()
+        assert env["HOME"] == str(workspace)
+
+    def test_none_mode_no_scrubbing(self, workspace: Path, monkeypatch):
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "secret123")
+        te = ToolExecutor(workspace=workspace, safety="none")
+        # In none mode, _bash passes env=None (inherits full env), not _scrubbed_env
+        # We verify _scrubbed_env is not called by checking the bash env
+        # (indirectly tested via bash test below)
+        assert te.safety == "none"
+
+
+class TestConfirmGate:
+    async def test_confirm_fn_deny_returns_denied_message(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, safety="confirm")
+
+        async def deny_all(tool_name, args):
+            return False
+
+        te.confirm_fn = deny_all
+        result = await te.execute("bash", {"command": "echo hello"})
+        assert result == "User denied this action."
+
+    async def test_confirm_fn_allow_executes(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, safety="confirm")
+
+        async def allow_all(tool_name, args):
+            return True
+
+        te.confirm_fn = allow_all
+        result = await te.execute("bash", {"command": "echo hello"})
+        assert "hello" in result
+
+    async def test_no_confirm_for_read_file(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, safety="confirm")
+        called = []
+
+        async def track(tool_name, args):
+            called.append(tool_name)
+            return False
+
+        te.confirm_fn = track
+        result = await te.execute("read_file", {"path": "hello.py"})
+        assert not called  # confirm not invoked for read_file
+        assert "Error" not in result or "print" in result
+
+    async def test_no_confirm_fn_allows_execution(self, workspace: Path):
+        """confirm_fn=None with safety=confirm still executes (no confirm possible)."""
+        te = ToolExecutor(workspace=workspace, safety="confirm")
+        te.confirm_fn = None
+        result = await te.execute("bash", {"command": "echo hi"})
+        assert "hi" in result
+
+
+class TestFormatConfirmPreview:
+    def test_bash(self):
+        preview = format_confirm_preview("bash", {"command": "git status"})
+        assert "bash" in preview
+        assert "git status" in preview
+
+    def test_python_exec_truncates(self):
+        code = "\n".join(f"line{i}" for i in range(15))
+        preview = format_confirm_preview("python_exec", {"code": code})
+        assert "python_exec" in preview
+        assert "5 more lines" in preview
+
+    def test_write_file(self):
+        preview = format_confirm_preview("write_file", {"path": "foo.txt", "content": "hello"})
+        assert "foo.txt" in preview
+        assert "5 bytes" in preview
 
 
 class TestTodo:

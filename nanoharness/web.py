@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import html as _html
 import json
+import uuid
 import webbrowser
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, TYPE_CHECKING
@@ -13,6 +15,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from . import logging as log, BANNER as _BANNER
+from .tools import format_confirm_preview
 
 if TYPE_CHECKING:
     from .agent import Agent, StreamEvent
@@ -39,12 +42,14 @@ def create_app(
     cfg = agent.config
     cached_html = (
         HTML_TEMPLATE
-        .replace("__MODEL_NAME__", cfg.model.name)
+        .replace("__MODEL_NAME_JSON__", json.dumps(cfg.model.name))
+        .replace("__WORKSPACE_JSON__", json.dumps(str(cfg.workspace)))
+        .replace("__MODEL_NAME__", _html.escape(cfg.model.name))
         .replace("__THINKING__", "on" if cfg.model.thinking else "off")
         .replace("__THINKING_ENABLED__", "true" if cfg.model.thinking else "false")
         .replace("__SAFETY__", cfg.safety.level)
         .replace("__WS_PORT__", str(port))
-        .replace("__WORKSPACE__", str(cfg.workspace))
+        .replace("__WORKSPACE__", _html.escape(str(cfg.workspace)))
         .replace("__BANNER__", json.dumps(_BANNER))
     )
 
@@ -55,11 +60,46 @@ def create_app(
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         await websocket.accept()
-        log.log_event("ws_connect", f"client connected")
+        log.log_event("ws_connect", "client connected")
+
+        # Per-connection confirm futures: id → Future[bool]
+        _pending_confirms: dict[str, asyncio.Future] = {}
+
+        async def web_confirm(tool_name: str, args: dict) -> bool:
+            req_id = str(uuid.uuid4())
+            future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+            _pending_confirms[req_id] = future
+            await websocket.send_json({
+                "type": "confirm_request",
+                "id": req_id,
+                "tool": tool_name,
+                "preview": format_confirm_preview(tool_name, args),
+            })
+            try:
+                return await asyncio.wait_for(asyncio.shield(future), timeout=120)
+            except asyncio.TimeoutError:
+                _pending_confirms.pop(req_id, None)
+                return False
+
+        agent.tools.confirm_fn = web_confirm
+
         try:
             while True:
-                data = await websocket.receive_json()
-                if data.get("type") != "input":
+                raw = await websocket.receive_text()
+                if len(raw) > 1_000_000:
+                    await websocket.close(code=1009)
+                    return
+                data = json.loads(raw)
+                msg_type = data.get("type")
+
+                if msg_type == "confirm_response":
+                    req_id = data.get("id", "")
+                    fut = _pending_confirms.pop(req_id, None)
+                    if fut and not fut.done():
+                        fut.set_result(bool(data.get("allowed", False)))
+                    continue
+
+                if msg_type != "input":
                     continue
                 text = data.get("text", "").strip()
                 if not text:
@@ -81,6 +121,11 @@ def create_app(
                     app.state.processing = False
         except WebSocketDisconnect:
             log.log_event("ws_disconnect", "client disconnected")
+            agent.tools.confirm_fn = None
+            # Reject any pending confirms so agent tasks don't hang
+            for fut in _pending_confirms.values():
+                if not fut.done():
+                    fut.set_result(False)
 
     @app.post("/api/chat")
     async def chat_sse(request: Request):
@@ -148,7 +193,8 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NanoHarness</title>
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@18.0.0/marked.min.js" integrity="sha384-tkjnnf9Tzhv5ZFrDroGvUExw9C3EVFo0RFRkzKR8ZX4b5Psoec4yb1PlD8Jh4j4H" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.3.3/dist/purify.min.js" integrity="sha384-pcBjnGbkyKeOXaoFkmJiuR9E08/6gkmus6/Strimnxtl3uk0Hx23v345pWyC/MMr" crossorigin="anonymous"></script>
 <style>
   :root {
     --bg: #0d1117; --bg2: #161b22; --bg3: #1c2129;
@@ -265,7 +311,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div id="status">
   <span class="model">__MODEL_NAME__</span>
   <span class="dim" id="status-thinking">think:__THINKING__</span>
-  <span class="dim">safety:__SAFETY__</span>
+  <span class="dim" id="status-safety">safety:__SAFETY__</span>
   <span class="dim" id="status-workspace">__WORKSPACE__</span>
   <span class="dim" id="status-ws">connecting...</span>
   <span class="dim" id="theme-toggle" style="cursor:pointer;margin-left:auto;" onclick="toggleTheme()">theme:auto</span>
@@ -292,7 +338,8 @@ let historyIdx = -1;
 // Markdown renderer
 function renderMd(text) {
   if (typeof marked !== 'undefined') {
-    return marked.parse(text, { breaks: true });
+    const html = marked.parse(text, { breaks: true });
+    return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
   }
   // Fallback: escape HTML and wrap in pre
   const esc = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
@@ -456,6 +503,12 @@ function handleEvent(ev) {
         const wsEl = document.getElementById('status-workspace');
         if (wsEl) wsEl.textContent = newWs;
       }
+      // Update safety if it changed
+      if (ev.text.startsWith('Safety:')) {
+        const safetyEl = document.getElementById('status-safety');
+        const level = ev.text.split(':')[1]?.trim().split(/\s/)[0];
+        if (safetyEl && level) safetyEl.textContent = 'safety:' + level;
+      }
       scrollBottom();
       break;
 
@@ -477,7 +530,81 @@ function handleEvent(ev) {
         fetch('/api/shutdown', {method: 'POST'}).finally(() => window.close());
       }
       break;
+
+    case 'confirm_request':
+      showConfirmModal(ev);
+      break;
   }
+}
+
+// --- Confirm modal ---
+function showConfirmModal(ev) {
+  const overlay = document.createElement('div');
+  overlay.id = 'confirm-overlay';
+  overlay.style.cssText = `
+    position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;
+    align-items:center;justify-content:center;z-index:9999;
+  `;
+
+  const box = document.createElement('div');
+  box.style.cssText = `
+    background:#1a1a2e;border:2px solid #4a9eff;border-radius:8px;
+    padding:24px 28px;max-width:600px;width:90%;font-family:monospace;
+  `;
+
+  const title = document.createElement('div');
+  title.style.cssText = 'color:#f0a500;font-weight:bold;font-size:1.1em;margin-bottom:12px;';
+  title.textContent = 'Allow tool call?';
+
+  const preview = document.createElement('pre');
+  preview.style.cssText = `
+    background:#0d0d1a;border-radius:4px;padding:10px 14px;
+    white-space:pre-wrap;word-break:break-word;color:#ccc;
+    font-size:0.88em;max-height:200px;overflow-y:auto;margin-bottom:16px;
+  `;
+  preview.textContent = ev.preview || ev.tool;
+
+  const buttons = document.createElement('div');
+  buttons.style.cssText = 'display:flex;gap:12px;';
+
+  function respond(allowed) {
+    document.getElementById('confirm-overlay')?.remove();
+    document.removeEventListener('keydown', keyHandler);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({type: 'confirm_response', id: ev.id, allowed}));
+    }
+  }
+
+  const allowBtn = document.createElement('button');
+  allowBtn.textContent = 'Allow  [Enter]';
+  allowBtn.style.cssText = `
+    background:#1a6634;color:#fff;border:1px solid #2a8844;
+    padding:8px 18px;border-radius:4px;cursor:pointer;font-family:monospace;
+  `;
+  allowBtn.onclick = () => respond(true);
+
+  const denyBtn = document.createElement('button');
+  denyBtn.textContent = 'Deny  [Esc / n]';
+  denyBtn.style.cssText = `
+    background:#6b1a1a;color:#fff;border:1px solid #8b2a2a;
+    padding:8px 18px;border-radius:4px;cursor:pointer;font-family:monospace;
+  `;
+  denyBtn.onclick = () => respond(false);
+
+  buttons.appendChild(allowBtn);
+  buttons.appendChild(denyBtn);
+  box.appendChild(title);
+  box.appendChild(preview);
+  box.appendChild(buttons);
+  overlay.appendChild(box);
+  document.body.appendChild(overlay);
+
+  function keyHandler(e) {
+    if (e.key === 'Enter') { e.preventDefault(); respond(true); }
+    else if (e.key === 'Escape' || e.key === 'n') { e.preventDefault(); respond(false); }
+  }
+  document.addEventListener('keydown', keyHandler);
+  allowBtn.focus();
 }
 
 function startAssistantMsg() {
@@ -766,7 +893,7 @@ function initWelcome() {
   frag.appendChild(bannerEl);
   const metaEl = document.createElement('div');
   metaEl.className = 'banner-meta';
-  metaEl.textContent = 'v0.1.0 \u2014 __MODEL_NAME__ \u2014 __WORKSPACE__';
+  metaEl.textContent = 'v0.1.0 \u2014 ' + __MODEL_NAME_JSON__ + ' \u2014 ' + __WORKSPACE_JSON__;
   frag.appendChild(metaEl);
   const tipEl = document.createElement('div');
   tipEl.className = 'msg-status';

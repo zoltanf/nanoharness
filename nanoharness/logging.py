@@ -155,7 +155,10 @@ def log_api_response_complete(
 
 
 def log_tool_exec_start(name: str, args: dict, call_id: str) -> None:
-    get_logger().info(f"TOOL_EXEC_START | {_elapsed()} | id={call_id} | {name} | args={json.dumps(args)}")
+    logged_args = args.copy()
+    if name == "write_file" and "content" in logged_args:
+        logged_args["content"] = f"<{len(logged_args['content'])} chars>"
+    get_logger().info(f"TOOL_EXEC_START | {_elapsed()} | id={call_id} | {name} | args={json.dumps(logged_args)}")
 
 
 def log_tool_exec_end(name: str, call_id: str, result: str, duration_s: float) -> None:

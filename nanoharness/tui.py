@@ -11,6 +11,7 @@ from textual.binding import Binding
 from textual.worker import Worker
 from textual.containers import Vertical, VerticalScroll
 from textual.events import Key
+from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.message import Message
 from textual.widgets import Static, TextArea
@@ -19,6 +20,7 @@ from rich.markup import escape
 from rich.markdown import Markdown
 
 from .completion import complete_line, hint_for_input, is_incomplete_command
+from .tools import format_confirm_preview
 from . import logging as dbg, BANNER as _BANNER
 
 if TYPE_CHECKING:
@@ -277,6 +279,58 @@ class StatusBar(Static):
 
     def refresh_status(self) -> None:
         self._update_text()
+
+
+class ConfirmModal(ModalScreen):
+    """Modal dialog for confirm-mode tool call approval."""
+
+    CSS = """
+    ConfirmModal {
+        align: center middle;
+    }
+    #confirm-box {
+        width: 70;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    BINDINGS = [
+        Binding("enter", "allow", show=False),
+        Binding("escape", "deny", show=False),
+        Binding("n", "deny", show=False),
+    ]
+
+    def __init__(self, preview: str, future: "asyncio.Future[bool]") -> None:
+        super().__init__()
+        self._preview = preview
+        self._future = future
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-box"):
+            yield Static(
+                Text.from_markup(
+                    f"[bold yellow]Allow tool call?[/]\n\n"
+                    f"[dim]{escape(self._preview)}[/]\n\n"
+                    f"  [bold][Enter][/] Allow   [bold][Esc / n][/] Deny"
+                )
+            )
+
+    def action_allow(self) -> None:
+        try:
+            self._future.set_result(True)
+        except asyncio.InvalidStateError:
+            pass
+        self.app.pop_screen()
+
+    def action_deny(self) -> None:
+        try:
+            self._future.set_result(False)
+        except asyncio.InvalidStateError:
+            pass
+        self.app.pop_screen()
 
 
 class NanoHarnessApp(App):
@@ -543,8 +597,19 @@ class NanoHarnessApp(App):
             self._agent_worker.cancel()
             self._agent_worker = None
 
+    def _show_confirm_prompt(self, tool_name: str, args: dict, future: "asyncio.Future[bool]") -> None:
+        """Push a ConfirmModal so the user can allow or deny a tool call."""
+        self.push_screen(ConfirmModal(format_confirm_preview(tool_name, args), future))
+
 
 async def run_tui(agent: Agent) -> int:
     app = NanoHarnessApp(agent)
+
+    async def tui_confirm(tool_name: str, args: dict) -> bool:
+        future: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        app.call_later(app._show_confirm_prompt, tool_name, args, future)
+        return await future
+
+    agent.tools.confirm_fn = tui_confirm
     await app.run_async()
     return 0
