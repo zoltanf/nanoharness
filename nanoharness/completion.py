@@ -253,10 +253,10 @@ def complete_line(workspace: Path, line: str) -> list[str]:
     """
     stripped = line.lstrip()
 
-    # /workspace <partial_dir> — complete directories only
+    # /workspace <partial_dir> — complete any directory on the filesystem
     if stripped.lower().startswith("/workspace "):
         partial = stripped[len("/workspace "):].lstrip()
-        return [f"/workspace {m}" for m in dir_matches(workspace, partial)]
+        return [f"/workspace {m}" for m in abs_dir_matches(partial)]
 
     # /think <partial_option> — complete on/off/once
     if stripped.lower().startswith("/think "):
