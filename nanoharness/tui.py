@@ -109,6 +109,11 @@ class CompletingInput(TextArea):
             event.stop()
             self._do_tab_complete()
             return
+        if event.key == "shift+tab":
+            event.prevent_default()
+            event.stop()
+            self._do_tab_complete(reverse=True)
+            return
         self._tab_matches = []
         self._tab_index = -1
         self._tab_prefix = ""
@@ -124,13 +129,14 @@ class CompletingInput(TextArea):
         current_line = lines[row] if row < len(lines) else ""
         hint_line.set_hint(hint_for_input(current_line))
 
-    def _do_tab_complete(self) -> None:
+    def _do_tab_complete(self, reverse: bool = False) -> None:
         row, _col = self.cursor_location
         lines = self.text.split("\n")
         current_line = lines[row] if row < len(lines) else ""
 
         if self._tab_matches and self._tab_index >= 0:
-            self._tab_index = (self._tab_index + 1) % len(self._tab_matches)
+            step = -1 if reverse else 1
+            self._tab_index = (self._tab_index + step) % len(self._tab_matches)
             new_line = self._tab_prefix + self._tab_matches[self._tab_index]
             self.replace(new_line, (row, 0), (row, len(current_line)))
             self.cursor_location = (row, len(new_line))
