@@ -127,6 +127,36 @@ class TestBuildMessages:
         assert str(agent.config.workspace) in msgs[0]["content"]
 
 
+class TestApplyWorkspace:
+    @pytest.fixture
+    def agent(self, config: Config, mock_client: AsyncMock) -> Agent:
+        return Agent(config, mock_client)
+
+    def test_commands_tools_updated_on_workspace_change(self, agent: Agent, tmp_path: Path):
+        """commands.tools must point to the new ToolExecutor after workspace change."""
+        original_tools = agent.tools
+        agent.config.workspace = tmp_path / "new_workspace"
+        agent.config.workspace.mkdir()
+        agent._apply_workspace()
+        assert agent.tools is not original_tools
+        assert agent.commands.tools is agent.tools
+
+    def test_todo_file_in_new_workspace_after_change(self, agent: Agent, tmp_path: Path):
+        """After workspace change, /todo clear operates on the new workspace's todo file."""
+        new_ws = tmp_path / "new_ws"
+        new_ws.mkdir()
+        todo_file = new_ws / ".nanoharness" / "todo.json"
+        todo_file.parent.mkdir()
+        todo_file.write_text('[{"id": 1, "task": "task in new ws", "done": false}]')
+
+        agent.config.workspace = new_ws
+        agent._apply_workspace()
+
+        result = agent.commands.handle("/todo clear")
+        assert "Cleared 1" in result.output
+        assert not todo_file.exists() or todo_file.read_text() == "[]"
+
+
 class TestClearHistory:
     @pytest.fixture
     def agent(self, config: Config, mock_client: AsyncMock) -> Agent:

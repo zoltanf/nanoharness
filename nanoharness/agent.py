@@ -105,6 +105,7 @@ class Agent:
             timeout=self.config.agent.timeout_seconds,
             max_chars=self.config.agent.max_output_chars,
         )
+        self.commands.tools = self.tools
         log.log_event("workspace_changed", str(ws))
 
     def _system_prompt(self) -> str:
