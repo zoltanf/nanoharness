@@ -237,9 +237,6 @@ class StatusBar(Static):
         self._net = indicator
         self._update_text()
 
-    # Column widths for the 4-column layout
-    _COL = (16, 10, 10)  # model, context, think — workspace fills the rest
-
     def _update_text(self) -> None:
         import os
         cfg = self.agent.config
@@ -278,8 +275,13 @@ class StatusBar(Static):
         # --- todo (own column) ---
         next_task, progress = self.agent.tools.get_todo_parts()
 
-        w0, w1, w2 = self._COL
         sep = " │ "
+
+        # Dynamic column widths: wide enough for both the value and its label.
+        # w0: model column — (model_val + space + net indicator) vs "model" label
+        w0 = max(len(model_val) + 2, len("model"))
+        w1 = max(len(ctx_val), len("context"))
+        w2 = max(len(think_val), len("think"))
 
         # Workspace column width: wide enough for both the path and the safety label
         safety_label = f"safety: {cfg.safety.level}"
