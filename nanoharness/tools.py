@@ -64,7 +64,7 @@ TOOL_SCHEMAS: list[dict] = [
         "name": "todo",
         "description": "Task list: add/complete/remove/list tasks",
         "parameters": {"type": "object", "properties": {
-            "action": {"type": "string", "enum": ["add", "complete", "remove", "list"]},
+            "action": {"type": "string", "enum": ["add", "complete", "remove", "list", "clear"]},
             "task": {"type": "string"},
             "id": {"type": "integer"},
         }, "required": ["action"]},
@@ -376,6 +376,11 @@ class ToolExecutor:
                     status = "done" if t["done"] else "pending"
                     lines.append(f"#{t['id']} [{status}] {t['task']}")
                 return "\n".join(lines)
+
+            case "clear":
+                count = len(tasks)
+                self._save_todo([])
+                return f"Cleared {count} task{'s' if count != 1 else ''}"
 
             case _:
                 return f"Error: unknown action: {action}"

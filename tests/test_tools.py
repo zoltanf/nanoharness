@@ -310,6 +310,20 @@ class TestTodo:
         result = te._todo("complete", task_id=999)
         assert "not found" in result
 
+    def test_clear(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        te._todo("add", task="Task one")
+        te._todo("add", task="Task two")
+        result = te._todo("clear")
+        assert "Cleared 2" in result
+        assert te._todo("list") == "No tasks"
+        assert te._todo_file.read_text() == "[]"
+
+    def test_clear_empty_list(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = te._todo("clear")
+        assert "Cleared 0" in result
+
     def test_unknown_action(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
         result = te._todo("invalid")
