@@ -250,8 +250,7 @@ class CommandHandler:
             case "" | "list":
                 output = self.tools._todo("list")
             case "clear":
-                self.tools._save_todo([])
-                output = "All tasks cleared."
+                output = self.tools._todo("clear")
             case "add":
                 if not rest:
                     return CommandResult(output="Usage: /todo add <task text>")
