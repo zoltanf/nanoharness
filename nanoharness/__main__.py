@@ -13,7 +13,7 @@ try:
 except ImportError:
     readline = None  # type: ignore[assignment]
 
-from .config import load_config, parse_args
+from .config import load_config, parse_args, WARN_SAFETY_NONE, WARN_DEBUG_ON
 from .tools import format_confirm_preview
 from . import BANNER as _BANNER
 from .ollama import OllamaClient
@@ -64,7 +64,9 @@ async def run_repl(agent: Agent) -> int:
     print(f"v0.1.0 — {agent.config.model.name} — {agent.config.workspace}")
     print(f"Thinking: {'on' if agent.config.model.thinking else 'off'} | Safety: {agent.config.safety.level}")
     if agent.config.debug:
-        print("Debug logging: ON")
+        print(WARN_DEBUG_ON)
+    if agent.config.safety.level == "none":
+        print(WARN_SAFETY_NONE)
     print("Type /help for commands, /quit to exit.\n")
 
     while True:
@@ -147,6 +149,9 @@ async def async_main() -> int:
         )
     log.log_config(config)
     log.log_startup("init", f"session={session_id} debug={config.debug}")
+
+    if config.safety.level == "none":
+        print(WARN_SAFETY_NONE, file=sys.stderr)
 
     client = OllamaClient(base_url=config.ollama.base_url)
 

@@ -5,16 +5,17 @@ from __future__ import annotations
 import asyncio
 import html as _html
 import json
+import re
 import uuid
 import webbrowser
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, TYPE_CHECKING
 
-
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from . import logging as log, BANNER as _BANNER
+from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON
 from .tools import format_confirm_preview
 
 if TYPE_CHECKING:
@@ -38,6 +39,14 @@ def create_app(
     app.state.agent = agent
     app.state.processing = False
 
+    _origin_re = re.compile(
+        rf"^https?://(localhost|127\.0\.0\.1|{re.escape(host)}):{port}$"
+    )
+
+    def _origin_allowed(origin: str) -> bool:
+        """Return True for local origins or absent Origin (non-browser clients)."""
+        return not origin or bool(_origin_re.match(origin))
+
     # Pre-render HTML template (config values are static for the server lifetime)
     cfg = agent.config
     cached_html = (
@@ -51,6 +60,8 @@ def create_app(
         .replace("__WS_PORT__", str(port))
         .replace("__WORKSPACE__", _html.escape(str(cfg.workspace)))
         .replace("__BANNER__", json.dumps(_BANNER))
+        .replace("__SAFETY_WARNING_JSON__", json.dumps(WARN_SAFETY_NONE if cfg.safety.level == "none" else ""))
+        .replace("__DEBUG_WARNING_JSON__", json.dumps(WARN_DEBUG_ON if cfg.debug else ""))
     )
 
     @app.get("/", response_class=HTMLResponse)
@@ -59,6 +70,12 @@ def create_app(
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
+        origin = websocket.headers.get("origin", "")
+        if not _origin_allowed(origin):
+            log.log_event("ws_rejected", f"bad origin: {origin!r}")
+            await websocket.accept()
+            await websocket.close(code=1008)
+            return
         await websocket.accept()
         log.log_event("ws_connect", "client connected")
 
@@ -121,7 +138,11 @@ def create_app(
                     app.state.processing = False
         except WebSocketDisconnect:
             log.log_event("ws_disconnect", "client disconnected")
-            agent.tools.confirm_fn = None
+            # Auto-deny all future confirms so in-flight agent tasks don't execute
+            # unconfirmed tools for the remainder of the turn.
+            async def _auto_deny(tool_name: str, args: dict) -> bool:
+                return False
+            agent.tools.confirm_fn = _auto_deny
             # Reject any pending confirms so agent tasks don't hang
             for fut in _pending_confirms.values():
                 if not fut.done():
@@ -159,8 +180,12 @@ def create_app(
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.post("/api/shutdown")
-    async def shutdown():
+    async def shutdown(request: Request):
         """Shut down the server (used by /quit in app mode)."""
+        origin = request.headers.get("origin", "")
+        if not _origin_allowed(origin):
+            log.log_event("shutdown_rejected", f"bad origin: {origin!r}")
+            raise HTTPException(status_code=403, detail="Forbidden")
         import os, signal
         asyncio.get_event_loop().call_later(0.2, os.kill, os.getpid(), signal.SIGTERM)
         return {"ok": True}
@@ -267,6 +292,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* Status/error messages */
   .msg-status { color: var(--fg-dim); font-size: 13px; font-style: italic; white-space: pre-wrap; font-family: var(--mono); }
   .msg-error { color: var(--red); font-weight: 600; }
+  .msg-warning { color: var(--yellow); font-weight: 600; font-size: 13px; font-family: var(--mono); white-space: pre-wrap; }
 
   /* Welcome banner */
   .banner { font-family: var(--mono); font-size: 12px; color: var(--green); line-height: 1.4; white-space: pre; }
@@ -327,6 +353,8 @@ const statusThinking = document.getElementById('status-thinking');
 let ws;
 let processing = false;
 let thinkingEnabled = __THINKING_ENABLED__;
+const SAFETY_WARNING = __SAFETY_WARNING_JSON__;
+const DEBUG_WARNING = __DEBUG_WARNING_JSON__;
 let contentBuf = '';
 let thinkingBuf = '';
 let currentAssistantEl = null;
@@ -337,13 +365,14 @@ let historyIdx = -1;
 
 // Markdown renderer
 function renderMd(text) {
-  if (typeof marked !== 'undefined') {
+  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
     const html = marked.parse(text, { breaks: true });
-    return typeof DOMPurify !== 'undefined' ? DOMPurify.sanitize(html) : html;
+    return DOMPurify.sanitize(html);
   }
-  // Fallback: escape HTML and wrap in pre
-  const esc = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  return '<pre>' + esc + '</pre>';
+  // Fallback: escape HTML and render as plain text (used when CDN libs fail to load)
+  const d = document.createElement('div');
+  d.textContent = text;
+  return '<pre style="white-space:pre-wrap">' + d.innerHTML + '</pre>';
 }
 
 function scrollBottom() {
@@ -899,6 +928,18 @@ function initWelcome() {
   tipEl.className = 'msg-status';
   tipEl.textContent = 'Type /help for commands';
   frag.appendChild(tipEl);
+  if (SAFETY_WARNING) {
+    const warnEl = document.createElement('div');
+    warnEl.className = 'msg-warning';
+    warnEl.textContent = SAFETY_WARNING;
+    frag.appendChild(warnEl);
+  }
+  if (DEBUG_WARNING) {
+    const dbgEl = document.createElement('div');
+    dbgEl.className = 'msg-warning';
+    dbgEl.textContent = DEBUG_WARNING;
+    frag.appendChild(dbgEl);
+  }
   chat.appendChild(frag);
 }
 

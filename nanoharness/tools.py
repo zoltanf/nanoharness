@@ -215,7 +215,7 @@ class ToolExecutor:
 
     def _write_file(self, path: str, content: str) -> str:
         p = self._safe_path(path)
-        if ".git" in p.relative_to(self.workspace).parts:
+        if any(part.lower() == ".git" for part in p.relative_to(self.workspace).parts):
             return "Error: write_file cannot modify .git directory"
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")

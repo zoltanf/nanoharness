@@ -11,6 +11,15 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".nanoharness"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
+WARN_SAFETY_NONE = (
+    "WARNING: safety=none — workspace containment and environment scrubbing are "
+    "disabled. The agent can read/write any file and run unrestricted commands."
+)
+WARN_DEBUG_ON = (
+    "Debug logging is ON — tool arguments, file contents, and conversation messages "
+    "are written to ~/.nanoharness/debug/"
+)
+
 
 @dataclass
 class ModelConfig:

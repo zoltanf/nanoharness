@@ -22,6 +22,7 @@ from rich.markdown import Markdown
 from .completion import complete_line, hint_for_input, is_incomplete_command
 from .tools import format_confirm_preview
 from . import logging as dbg, BANNER as _BANNER
+from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -428,7 +429,11 @@ class NanoHarnessApp(App):
             )
         )
         if cfg.debug:
-            self._append_chat(Text.from_markup("[dim]Debug logging: ON[/]"))
+            self._append_chat(Text.from_markup(f"[yellow]{escape(WARN_DEBUG_ON)}[/]"))
+        if cfg.safety.level == "none":
+            self._append_chat(Text.from_markup(
+                f"[bold red]WARNING:[/] [yellow]{escape(WARN_SAFETY_NONE[len('WARNING: '):])}[/]"
+            ))
 
     def on_mount(self) -> None:
         self._show_welcome()
