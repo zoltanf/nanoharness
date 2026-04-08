@@ -6,7 +6,7 @@ It acts as an autonomous loop that can interact with your local system to perfor
 
 ### Key Capabilities
 
-* **Tool Use:** The agent can execute `bash` commands, `read_file`, `write_file`, `list_dir`, execute `python_exec` code, and manage a `todo` list.
+* **Tool Use:** The agent can execute `bash` commands, `read_file`, `write_file`, `list_dir`, execute `python_exec` code, manage a `todo` list, and fetch web content with `fetch_webpage` (requires `web-reader` extra).
 * **Local & Private:** Relies on Ollama — all LLM processing stays on your local machine.
 * **Safety-Focused:** Features a sandboxed "workspace" mode, restricting file and shell operations to a specific directory. A `confirm` level adds per-tool approval prompts.
 * **Streaming & Thinking:** Supports streaming responses and extended "thinking" mode for compatible models.

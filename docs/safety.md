@@ -58,7 +58,7 @@ When the agent requests one of these tools, execution is paused and the user see
 
 If the WebSocket disconnects while the agent is mid-turn, all pending confirmations are auto-denied and subsequent tool calls in that turn are also auto-denied. The agent does not execute tools silently after a disconnect.
 
-**`todo` is not in the confirm list** — it only modifies a local JSON file inside the workspace and is considered low-risk.
+**`todo` and `fetch_webpage` are not in the confirm list** — `todo` only modifies a local JSON file inside the workspace; `fetch_webpage` is read-only network access with no local side effects.
 
 ---
 

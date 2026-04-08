@@ -5,7 +5,7 @@ Lightweight AI coding agent for local LLMs via [Ollama](https://ollama.com). Run
 ## Features
 
 - Streaming responses with thinking mode support
-- Tool use: `bash`, `read_file`, `write_file`, `list_dir`, `python_exec`, `todo`
+- Tool use: `bash`, `read_file`, `write_file`, `list_dir`, `python_exec`, `todo`, `fetch_webpage`
 - Workspace safety: file/shell ops sandboxed to a working directory
 - Tab completion and inline command hints
 - Web UI with WebSocket streaming (optional)
@@ -88,6 +88,20 @@ level = "workspace"   # workspace | confirm | none
 
 [ollama]
 base_url = "http://localhost:11434"
+```
+
+## Optional extras
+
+| Extra | Purpose |
+|-------|---------|
+| `web` | FastAPI web UI |
+| `web-reader` | `fetch_webpage` tool (installs `trafilatura`) |
+| `test` | pytest suite |
+| `playwright` | browser tests |
+
+```bash
+# Enable web page fetching
+uv run --extra web-reader python -m nanoharness
 ```
 
 ## Tests

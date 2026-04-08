@@ -60,7 +60,7 @@ Precedence (highest to lowest): CLI args → env vars (`NANO_*`) → TOML (`~/.n
 
 ### Tool Execution (`tools.py`)
 
-`ToolExecutor` dispatches to: `bash`, `read_file`, `write_file`, `list_dir`, `python_exec`, `todo`. All file operations go through `_safe_path()` which enforces workspace containment unless `safety="unrestricted"`. Output clipped to `max_output_chars`.
+`ToolExecutor` dispatches to: `bash`, `read_file`, `write_file`, `list_dir`, `python_exec`, `todo`, `fetch_webpage`. All file operations go through `_safe_path()` which enforces workspace containment unless `safety="unrestricted"`. `fetch_webpage` uses `httpx` for fetching and `trafilatura` (lazy import, requires `web-reader` extra) for content extraction. Output clipped to `max_output_chars`.
 
 ### Web UI (`web.py`)
 

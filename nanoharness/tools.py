@@ -10,6 +10,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+import httpx
+
 # Ultra-terse tool schemas for minimal token usage
 TOOL_SCHEMAS: list[dict] = [
     {"type": "function", "function": {
@@ -66,6 +68,13 @@ TOOL_SCHEMAS: list[dict] = [
             "task": {"type": "string"},
             "id": {"type": "integer"},
         }, "required": ["action"]},
+    }},
+    {"type": "function", "function": {
+        "name": "fetch_webpage",
+        "description": "Fetch a URL and return its main text content",
+        "parameters": {"type": "object", "properties": {
+            "url": {"type": "string", "description": "https:// or http:// URL"},
+        }, "required": ["url"]},
     }},
 ]
 
@@ -183,6 +192,8 @@ class ToolExecutor:
                         arguments.get("task"),
                         arguments.get("id"),
                     )
+                case "fetch_webpage":
+                    return await self._fetch_webpage(arguments.get("url", ""))
                 case _:
                     return f"Unknown tool: {name}"
         except Exception as e:
@@ -393,3 +404,41 @@ class ToolExecutor:
         progress = f"Tasks: {done}/{total} done"
         next_task = pending[0] if pending else None
         return next_task, progress
+
+    async def _fetch_webpage(self, url: str) -> str:
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return f"Error: unsupported scheme '{parsed.scheme}'. Only http/https are allowed."
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True,
+                timeout=self.timeout,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; NanoHarness/1.0)"},
+            ) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                html = response.text
+        except httpx.TimeoutException:
+            return f"Error: request timed out after {self.timeout}s"
+        except httpx.HTTPStatusError as e:
+            return f"Error: HTTP {e.response.status_code} for {url}"
+        except httpx.RequestError as e:
+            return f"Error: {type(e).__name__}: {e}"
+        try:
+            import trafilatura
+            text = trafilatura.extract(html, include_links=False, include_images=False)
+            if not text:
+                from html.parser import HTMLParser
+
+                class _S(HTMLParser):
+                    def __init__(self): super().__init__(); self._p: list[str] = []
+                    def handle_data(self, d): self._p.append(d)
+                    def get_text(self): return " ".join(self._p)
+
+                s = _S()
+                s.feed(html)
+                text = s.get_text()
+        except ImportError:
+            return "Error: 'trafilatura' not installed. Run: uv add trafilatura"
+        return _clip(text.strip() or "(no content extracted)", self.max_chars)

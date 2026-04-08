@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from nanoharness.tools import ToolExecutor, _clip, format_confirm_preview
@@ -423,3 +426,127 @@ class TestExecuteDispatch:
         te = ToolExecutor(workspace=workspace)
         result = await te.execute("read_file", {"path": "../../escape"})
         assert "Error" in result
+
+
+def _make_mock_client(html: str, status: int = 200):
+    """Return a patched httpx.AsyncClient context manager that returns html."""
+    mock_resp = MagicMock()
+    mock_resp.text = html
+    mock_resp.raise_for_status = MagicMock()
+    mock_instance = AsyncMock()
+    mock_instance.get = AsyncMock(return_value=mock_resp)
+    mock_client = MagicMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_instance)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    return mock_client, mock_instance, mock_resp
+
+
+class TestFetchWebpage:
+    async def test_rejects_ftp_scheme(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = await te._fetch_webpage("ftp://example.com/file.txt")
+        assert "Error" in result
+        assert "scheme" in result
+
+    async def test_rejects_file_scheme(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = await te._fetch_webpage("file:///etc/passwd")
+        assert "Error" in result
+        assert "scheme" in result
+
+    async def test_rejects_empty_url(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = await te._fetch_webpage("")
+        assert "Error" in result
+
+    async def test_timeout_error(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, timeout=5)
+        mock_client, mock_instance, _ = _make_mock_client("")
+        mock_instance.get.side_effect = httpx.TimeoutException("timed out")
+        with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
+            result = await te._fetch_webpage("https://example.com")
+        assert "Error" in result
+        assert "timed out" in result
+
+    async def test_http_404_error(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        mock_client, mock_instance, _ = _make_mock_client("")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+        mock_instance.get.side_effect = httpx.HTTPStatusError(
+            "not found", request=MagicMock(), response=mock_resp
+        )
+        with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
+            result = await te._fetch_webpage("https://example.com/gone")
+        assert "Error" in result
+        assert "404" in result
+
+    async def test_request_error(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        mock_client, mock_instance, _ = _make_mock_client("")
+        mock_instance.get.side_effect = httpx.ConnectError("connection refused")
+        with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
+            result = await te._fetch_webpage("https://unreachable.invalid")
+        assert "Error" in result
+        assert "ConnectError" in result
+
+    async def test_successful_fetch_with_trafilatura(self, workspace: Path):
+        html = "<html><body><article><p>Hello world article text.</p></article></body></html>"
+        te = ToolExecutor(workspace=workspace)
+        mock_client, _, _ = _make_mock_client(html)
+        with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
+            with patch("trafilatura.extract", return_value="Hello world article text."):
+                result = await te._fetch_webpage("https://example.com")
+        assert "Hello world article text." in result
+
+    async def test_clips_to_max_chars(self, workspace: Path):
+        long_text = "word " * 10000
+        te = ToolExecutor(workspace=workspace, max_chars=100)
+        mock_client, _, _ = _make_mock_client("<html><body>" + long_text + "</body></html>")
+        with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
+            with patch("trafilatura.extract", return_value=long_text):
+                result = await te._fetch_webpage("https://example.com")
+        assert "truncated" in result
+        assert len(result) < len(long_text)
+
+    async def test_trafilatura_returns_none_uses_fallback(self, workspace: Path):
+        html = "<html><body><p>Plain fallback text</p></body></html>"
+        te = ToolExecutor(workspace=workspace)
+        mock_client, _, _ = _make_mock_client(html)
+        with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
+            with patch("trafilatura.extract", return_value=None):
+                result = await te._fetch_webpage("https://example.com")
+        assert "Plain fallback text" in result
+
+    async def test_missing_trafilatura_returns_error(self, workspace: Path):
+        html = "<html><body><p>content</p></body></html>"
+        te = ToolExecutor(workspace=workspace)
+        mock_client, _, _ = _make_mock_client(html)
+        with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
+            with patch.dict(sys.modules, {"trafilatura": None}):
+                result = await te._fetch_webpage("https://example.com")
+        assert "Error" in result
+        assert "trafilatura" in result
+
+    async def test_dispatch_routes_fetch_webpage(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        with patch.object(te, "_fetch_webpage", return_value="mocked result") as mock_fn:
+            result = await te.execute("fetch_webpage", {"url": "https://example.com"})
+        mock_fn.assert_called_once_with("https://example.com")
+        assert result == "mocked result"
+
+    async def test_no_confirm_needed(self, workspace: Path):
+        """fetch_webpage should not trigger the confirm gate."""
+        te = ToolExecutor(workspace=workspace, safety="confirm")
+        called = []
+
+        async def track(tool_name, args):
+            called.append(tool_name)
+            return False
+
+        te.confirm_fn = track
+        mock_client, _, _ = _make_mock_client("<html><body><p>ok</p></body></html>")
+        with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
+            with patch("trafilatura.extract", return_value="ok"):
+                await te.execute("fetch_webpage", {"url": "https://example.com"})
+        assert not called
