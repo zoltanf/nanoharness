@@ -328,6 +328,77 @@ class TestTodoSummary:
         assert "Next: Second" in summary
 
 
+class TestSearchFiles:
+    def test_basic_glob(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = te._search_files("*.py")
+        assert "hello.py" in result
+        assert "src/main.py" in result
+
+    def test_pattern_with_subdirectory(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = te._search_files("*.py", path="src")
+        assert "src/main.py" in result
+        assert "hello.py" not in result
+
+    def test_no_matches(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = te._search_files("*.nonexistent")
+        assert result == "No files found."
+
+    def test_nonexistent_directory(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = te._search_files("*.py", path="missing_dir")
+        assert "Not a directory" in result
+
+    def test_path_outside_workspace_blocked(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, safety="workspace")
+        with pytest.raises(ValueError, match="escapes workspace"):
+            te._search_files("*.py", path="../../etc")
+
+    def test_path_outside_workspace_allowed_with_none_safety(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, safety="none")
+        # /tmp is always a real directory and outside any pytest workspace
+        result = te._search_files("*.py", path="/tmp")
+        assert "Not a directory" not in result
+
+    def test_git_dir_skipped(self, workspace: Path):
+        git_dir = workspace / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        te = ToolExecutor(workspace=workspace)
+        result = te._search_files("HEAD")
+        assert ".git" not in result
+
+    def test_hidden_files_included(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = te._search_files("secret.txt")
+        assert "secret.txt" in result
+
+    def test_results_relative_to_workspace(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = te._search_files("main.py")
+        # Should be relative path, not absolute
+        assert str(workspace) not in result
+        assert "src/main.py" in result
+
+    def test_empty_pattern(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result = te._search_files("")
+        assert "Error" in result
+
+    def test_count_cap(self, workspace: Path):
+        # Create 201 files
+        many = workspace / "many"
+        many.mkdir()
+        for i in range(201):
+            (many / f"file{i}.txt").write_text("")
+        te = ToolExecutor(workspace=workspace)
+        result = te._search_files("*.txt", path="many")
+        assert "200 result limit reached" in result
+        assert result.count(".txt") == 200
+
+
 class TestExecuteDispatch:
     @pytest.mark.asyncio
     async def test_unknown_tool(self, workspace: Path):

@@ -44,6 +44,14 @@ TOOL_SCHEMAS: list[dict] = [
         }, "required": []},
     }},
     {"type": "function", "function": {
+        "name": "search_files",
+        "description": "Find files matching a glob pattern recursively within the workspace. Skips .git. Returns paths relative to workspace root.",
+        "parameters": {"type": "object", "properties": {
+            "pattern": {"type": "string", "description": "Glob pattern, e.g. '*.py', '**/*.toml', '*config*'"},
+            "path": {"type": "string", "description": "Directory to search in (default: workspace root)"},
+        }, "required": ["pattern"]},
+    }},
+    {"type": "function", "function": {
         "name": "python_exec",
         "description": "Execute Python code, return stdout",
         "parameters": {"type": "object", "properties": {
@@ -162,6 +170,11 @@ class ToolExecutor:
                     )
                 case "list_dir":
                     return self._list_dir(arguments.get("path", "."))
+                case "search_files":
+                    return self._search_files(
+                        arguments.get("pattern", ""),
+                        arguments.get("path", "."),
+                    )
                 case "python_exec":
                     return await self._python_exec(arguments.get("code", ""))
                 case "todo":
@@ -241,6 +254,31 @@ class ToolExecutor:
         if not entries:
             return "(empty directory)"
         return "\n".join(entries)
+
+    def _search_files(self, pattern: str, path: str = ".") -> str:
+        if not pattern:
+            return "Error: pattern is required"
+        base = self._safe_path(path)
+        if not base.is_dir():
+            return f"Not a directory: {path}"
+        MAX_RESULTS = 200
+        results = []
+        for match in base.rglob(pattern):
+            if ".git" in match.parts:
+                continue
+            try:
+                rel = match.relative_to(self.workspace)
+            except ValueError:
+                rel = match
+            results.append(str(rel))
+            if len(results) >= MAX_RESULTS:
+                break
+        if not results:
+            return "No files found."
+        output = "\n".join(results)
+        if len(results) >= MAX_RESULTS:
+            output += "\n...[200 result limit reached — narrow your pattern or specify a subdirectory]"
+        return _clip(output, self.max_chars)
 
     async def _python_exec(self, code: str) -> str:
         if not code.strip():
