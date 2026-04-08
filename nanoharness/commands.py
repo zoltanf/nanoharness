@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .config import CONFIG_KEYS
+
 if TYPE_CHECKING:
     from .config import Config
     from .tools import ToolExecutor
@@ -52,15 +54,12 @@ Key bindings:
   Ctrl+C                      Quit
 """
 
-CONFIG_KEYS = [
-    "model.name",
-    "model.thinking",
-    "model.num_ctx",
-    "agent.max_steps",
-    "agent.timeout_seconds",
-    "agent.max_output_chars",
-    "safety.level",
-    "ollama.base_url",
+_LINUX_TERMINALS = [
+    ("gnome-terminal", ["--"]),
+    ("xterm", ["-e"]),
+    ("kitty", []),
+    ("alacritty", ["-e"]),
+    ("wezterm", ["start", "--"]),
 ]
 
 
@@ -192,13 +191,6 @@ class CommandHandler:
                         script = f'tell application "Terminal" to do script "cd {ws} && lazygit"'
                         subprocess.Popen(["osascript", "-e", script])
                     elif platform.system() == "Linux":
-                        _LINUX_TERMINALS = [
-                            ("gnome-terminal", ["--"]),
-                            ("xterm", ["-e"]),
-                            ("kitty", []),
-                            ("alacritty", ["-e"]),
-                            ("wezterm", ["start", "--"]),
-                        ]
                         for term, extra_args in _LINUX_TERMINALS:
                             if shutil.which(term):
                                 cmd = [term] + extra_args + ["sh", "-c", f"cd {ws} && lazygit"]

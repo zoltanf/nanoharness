@@ -11,6 +11,17 @@ from pathlib import Path
 CONFIG_DIR = Path.home() / ".nanoharness"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
 
+CONFIG_KEYS = [
+    "model.name",
+    "model.thinking",
+    "model.num_ctx",
+    "agent.max_steps",
+    "agent.timeout_seconds",
+    "agent.max_output_chars",
+    "safety.level",
+    "ollama.base_url",
+]
+
 WARN_SAFETY_NONE = (
     "WARNING: safety=none — workspace containment and environment scrubbing are "
     "disabled. The agent can read/write any file and run unrestricted commands."

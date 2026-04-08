@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .config import CONFIG_KEYS  # noqa: F401 — re-exported for callers
+
 COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/pull", "/update", "/todo", "/help", "/quit", "/exit", "/safety"]
 
 THINK_OPTIONS = ["on", "off", "once"]
@@ -11,16 +13,6 @@ SAFETY_OPTIONS = ["workspace", "confirm", "none"]
 _THINK_VALID = ("on", "off", "once", "true", "false", "yes", "no")
 _UPDATE_SUBCMDS = ("ollama", "models")
 _INFO_SUBCMDS = ("prompt", "tools")
-CONFIG_KEYS = [
-    "model.name",
-    "model.thinking",
-    "model.num_ctx",
-    "agent.max_steps",
-    "agent.timeout_seconds",
-    "agent.max_output_chars",
-    "safety.level",
-    "ollama.base_url",
-]
 
 
 def is_incomplete_command(line: str) -> bool:
@@ -296,9 +288,6 @@ def dir_matches(base: Path, partial: str) -> list[str]:
         parent = partial_path.parent
         prefix = partial_path.name
 
-        if not parent.is_dir():
-            return []
-
         prefix_lower = prefix.lower()
         matches = []
         for entry in parent.iterdir():
@@ -326,9 +315,6 @@ def path_matches(workspace: Path, partial: str) -> list[str]:
         partial_path = workspace / partial
         parent = partial_path.parent
         prefix = partial_path.name
-
-        if not parent.is_dir():
-            return []
 
         prefix_lower = prefix.lower()
         matches = []

@@ -385,14 +385,18 @@ class ToolExecutor:
             case _:
                 return f"Error: unknown action: {action}"
 
+    def _get_task_stats(self) -> tuple[int, int, list[str]]:
+        """Return (done_count, total_count, pending_task_names)."""
+        tasks = self._load_todo()
+        done = sum(1 for t in tasks if t["done"])
+        pending = [t["task"] for t in tasks if not t["done"]]
+        return done, len(tasks), pending
+
     def get_todo_summary(self) -> str | None:
         """Get a brief todo summary for display in UI. Returns None if no tasks."""
-        tasks = self._load_todo()
-        if not tasks:
+        done, total, pending = self._get_task_stats()
+        if not total:
             return None
-        done = sum(1 for t in tasks if t["done"])
-        total = len(tasks)
-        pending = [t["task"] for t in tasks if not t["done"]]
         summary = f"Tasks: {done}/{total} done"
         if pending:
             summary += f" | Next: {pending[0]}"
@@ -400,15 +404,10 @@ class ToolExecutor:
 
     def get_todo_parts(self) -> tuple[str | None, str | None]:
         """Return (next_task, progress) for status bar display. Both None if no tasks."""
-        tasks = self._load_todo()
-        if not tasks:
+        done, total, pending = self._get_task_stats()
+        if not total:
             return None, None
-        done = sum(1 for t in tasks if t["done"])
-        total = len(tasks)
-        pending = [t["task"] for t in tasks if not t["done"]]
-        progress = f"Tasks: {done}/{total} done"
-        next_task = pending[0] if pending else None
-        return next_task, progress
+        return pending[0] if pending else None, f"Tasks: {done}/{total} done"
 
     async def _fetch_webpage(self, url: str) -> str:
         from urllib.parse import urlparse

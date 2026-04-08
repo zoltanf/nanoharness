@@ -41,15 +41,6 @@ def config(workspace: Path) -> Config:
 
 
 @pytest.fixture
-def unrestricted_config(workspace: Path) -> Config:
-    """Return a Config with unrestricted safety."""
-    cfg = Config()
-    cfg.workspace = workspace
-    cfg.safety.level = "unrestricted"
-    return cfg
-
-
-@pytest.fixture
 def mock_client() -> AsyncMock:
     """Return an AsyncMock of OllamaClient."""
     client = AsyncMock()
