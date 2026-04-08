@@ -19,9 +19,9 @@ from rich.text import Text
 from rich.markup import escape
 from rich.markdown import Markdown
 
-from .completion import complete_line, hint_for_input, is_incomplete_command
+from .completion import complete_line, hint_for_input, is_incomplete_command, command_send_error
 from .tools import format_confirm_preview
-from . import logging as dbg, BANNER as _BANNER
+from . import logging as dbg, BANNER as _BANNER, __version__
 from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON
 
 if TYPE_CHECKING:
@@ -154,8 +154,17 @@ class CompletingInput(TextArea):
         stripped = current_line.lstrip()
         if (stripped.lower().startswith("/workspace ")
                 or stripped.lower().startswith("/think ")
+                or stripped.lower().startswith("/update ")
                 or stripped.lower().startswith("/config ")):
+            # Full-line replacements: no prefix needed.
             prefix = ""
+        elif (not stripped.startswith("/")
+              and matches
+              and all(m.startswith("/think") for m in matches)):
+            # Embedded /think after regular text: preserve everything up to
+            # the "/" that started the command token.
+            slash_pos = current_line.rfind("/")
+            prefix = current_line[:slash_pos] if slash_pos >= 0 else ""
         else:
             parts = stripped.rsplit(None, 1)
             last_token = parts[-1] if parts else ""
@@ -219,6 +228,12 @@ class StatusBar(Static):
     def __init__(self, agent: Agent) -> None:
         super().__init__()
         self.agent = agent
+        self._net = ""  # "↑" sending, "↓" receiving, "" idle
+        self._update_text()
+
+    def set_net(self, indicator: str) -> None:
+        """Update the network activity indicator and redraw."""
+        self._net = indicator
         self._update_text()
 
     # Column widths for the 4-column layout
@@ -230,6 +245,12 @@ class StatusBar(Static):
 
         # --- model ---
         model_val = cfg.model.name
+        if self._net == "↑":
+            net_markup = "[red]↑[/]"
+        elif self._net == "↓":
+            net_markup = "[green]↓[/]"
+        else:
+            net_markup = " "
 
         # --- context ---
         used = self.agent.last_prompt_tokens
@@ -264,9 +285,10 @@ class StatusBar(Static):
         w3 = max(len(ws), len(safety_label))
 
         # Row 1 — values (all bold, uniform colour)
+        # model column: name padded to (w0-2), then a space and the 1-char net indicator
         todo_val = f"Next: {next_task}" if next_task else ""
         val_row = (
-            f" [bold]{model_val:<{w0}}[/]{sep}"
+            f" [bold]{model_val:<{w0 - 2}}[/] {net_markup}{sep}"
             f"[{ctx_style}]{ctx_val:^{w1}}[/]{sep}"
             f"[bold]{think_val:^{w2}}[/]{sep}"
             f"[bold]{ws:<{w3}}[/]"
@@ -419,15 +441,14 @@ class NanoHarnessApp(App):
         chat = self.query_one("#chat-log", VerticalScroll)
         chat.scroll_end(animate=False)
 
-    def _show_welcome(self) -> None:
+    def _show_welcome(self, ollama_version: str = "") -> None:
         cfg = self.agent.config
         self._append_chat(Text.from_markup(f"[bold green]{_BANNER}[/]\n"))
-        self._append_chat(
-            Text.from_markup(
-                f"[dim]v0.1.0 — {cfg.model.name} — {cfg.workspace}[/]\n"
-                f"[dim]Type /help for commands[/]"
-            )
-        )
+        subtitle = f"[dim]v{__version__} — {cfg.model.name} — {cfg.workspace}[/]"
+        if ollama_version:
+            subtitle += f"\n[dim]Ollama {ollama_version} — {cfg.ollama.base_url}[/]"
+        subtitle += "\n[dim]Type /help for commands[/]"
+        self._append_chat(Text.from_markup(subtitle))
         if cfg.debug:
             self._append_chat(Text.from_markup(f"[yellow]{escape(WARN_DEBUG_ON)}[/]"))
         if cfg.safety.level == "none":
@@ -435,8 +456,9 @@ class NanoHarnessApp(App):
                 f"[bold red]WARNING:[/] [yellow]{escape(WARN_SAFETY_NONE[len('WARNING: '):])}[/]"
             ))
 
-    def on_mount(self) -> None:
-        self._show_welcome()
+    async def on_mount(self) -> None:
+        ollama_version = await self.agent.client.get_version()
+        self._show_welcome(ollama_version)
         self.query_one(SpinnerLine).display = False
         # Disable focus on the chat scroll so clicks don't steal focus from input
         chat_log = self.query_one("#chat-log", VerticalScroll)
@@ -455,7 +477,12 @@ class NanoHarnessApp(App):
         inp = self.query_one(CompletingInput)
         inp.read_only = False  # restore immediately
 
-        if not user_input or is_incomplete_command(user_input):
+        if not user_input:
+            return
+        if is_incomplete_command(user_input):
+            err = command_send_error(user_input)
+            if err:
+                self.query_one(HintLine).set_hint(err)
             return
 
         inp.load_text("")
@@ -467,6 +494,7 @@ class NanoHarnessApp(App):
 
         spinner = self.query_one(SpinnerLine)
         spinner.start("Thinking" if self.agent.config.model.thinking else "Processing")
+        self.query_one(StatusBar).set_net("↑")
 
         # Run streaming in a Worker (separate asyncio Task) so the App's message
         # pump is freed immediately — this lets Textual process key events and
@@ -484,10 +512,12 @@ class NanoHarnessApp(App):
         content_buffer = ""
         thinking_widget: Static | None = None
         streaming_widget: Static | None = None
+        progress_widget: Static | None = None
         got_first_output = False
 
         def _finalize_widgets() -> None:
-            nonlocal thinking_buffer, content_buffer, thinking_widget, streaming_widget
+            nonlocal thinking_buffer, content_buffer, thinking_widget, streaming_widget, progress_widget
+            progress_widget = None  # reset reference; last line remains visible in chat
             if content_buffer and streaming_widget:
                 try:
                     streaming_widget.update(Markdown(content_buffer))
@@ -507,6 +537,7 @@ class NanoHarnessApp(App):
                         if not got_first_output:
                             got_first_output = True
                             spinner.stop()
+                            status_bar.set_net("↓")
                         content_buffer += ev.text
                         if streaming_widget is None:
                             streaming_widget = self._append_chat(content_buffer)
@@ -518,6 +549,7 @@ class NanoHarnessApp(App):
                         if not got_first_output:
                             got_first_output = True
                             spinner.stop()
+                            status_bar.set_net("↓")
                         thinking_buffer += ev.text
                         if thinking_widget is None:
                             thinking_widget = self._append_chat(
@@ -529,10 +561,24 @@ class NanoHarnessApp(App):
                             )
                             thinking_widget.scroll_visible()
 
+                    case "progress":
+                        if not got_first_output:
+                            got_first_output = True
+                            spinner.stop()
+                            status_bar.set_net("↓")
+                        if progress_widget is None:
+                            progress_widget = self._append_chat(
+                                Text(ev.text, style="dim")
+                            )
+                        else:
+                            progress_widget.update(Text(ev.text, style="dim"))
+                            progress_widget.scroll_visible()
+
                     case "tool_call":
                         if not got_first_output:
                             got_first_output = True
                         spinner.stop()
+                        status_bar.set_net("")
                         _finalize_widgets()
                         args_str = ", ".join(
                             f"{k}={repr(v)[:80]}" for k, v in ev.tool_args.items()
@@ -545,6 +591,7 @@ class NanoHarnessApp(App):
 
                     case "tool_result":
                         spinner.stop()
+                        status_bar.set_net("↑")
                         preview = ev.text[:500]
                         if len(ev.text) > 500:
                             preview += "..."
@@ -598,6 +645,7 @@ class NanoHarnessApp(App):
             self._processing = False
             self._agent_worker = None
             inp.read_only = False
+            status_bar.set_net("")
             status_bar.refresh_status()
             dbg.log_event("tui_turn_complete", "input processing finished")
             inp.focus()

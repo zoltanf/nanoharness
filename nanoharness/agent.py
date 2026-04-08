@@ -9,11 +9,20 @@ import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Any
 
+import platform
+import shutil
+
+import httpx
+
 from .config import Config
 from .ollama import OllamaClient
 from .tools import TOOL_SCHEMAS, ToolExecutor
 from .commands import CommandHandler
 from . import logging as log
+
+# Fixed overhead: tool schemas are sent on every LLM call but not included in
+# _build_messages. Pre-compute once so the token estimate can account for them.
+_TOOL_SCHEMAS_CHARS: int = len(json.dumps(TOOL_SCHEMAS))
 
 
 SYSTEM_PROMPT = (
@@ -43,7 +52,7 @@ def _parse_code_blocks(text: str) -> list[tuple[str, str]]:
 @dataclass
 class StreamEvent:
     """Events emitted by the agent during processing."""
-    type: str  # "content" | "thinking" | "tool_call" | "tool_result" | "done" | "error" | "status"
+    type: str  # "content" | "thinking" | "tool_call" | "tool_result" | "done" | "error" | "status" | "progress"
     text: str = ""
     tool_name: str = ""
     tool_args: dict = field(default_factory=dict)
@@ -76,8 +85,8 @@ class Agent:
         self._step_count = 0
         self._prev_thinking = False
         self.last_prompt_tokens: int = 0
-        self._peak_prompt_tokens: int = 0  # cumulative max to handle KV-cache undercounting
-        self.context_size: int = 0  # fetched from /api/show on first use
+        self._last_build_chars: int = 0
+        self.context_size: int = 0  # fetched from /api/ps on first successful load
 
     @property
     def step_count(self) -> int:
@@ -134,6 +143,10 @@ class Agent:
 
         messages.extend(selected)
 
+        # Track chars for token estimation (not for fallback builds)
+        if not system_override:
+            self._last_build_chars = used
+
         log.log_history_state(self.history)
         log.get_logger().debug(
             f"BUILD_MESSAGES | total={len(messages)} | history={len(self.history)} "
@@ -145,7 +158,7 @@ class Agent:
         self.history.clear()
         self._step_count = 0
         self.last_prompt_tokens = 0
-        self._peak_prompt_tokens = 0
+        self._last_build_chars = 0
         log.log_event("clear_history")
 
     async def _stream_response(
@@ -172,6 +185,12 @@ class Agent:
                     yield StreamEvent(type="_eval_count", text=str(chunk.eval_count))
                 if chunk.done and chunk.prompt_eval_count:
                     yield StreamEvent(type="_prompt_eval_count", text=str(chunk.prompt_eval_count))
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            log.log_error("stream_response", e)
+            yield StreamEvent(type="error", text=f"Ollama connection refused: {e}")
+        except (httpx.RemoteProtocolError, httpx.ReadError) as e:
+            log.log_error("stream_response", e)
+            yield StreamEvent(type="error", text=f"Ollama connection lost mid-stream: {e}")
         except Exception as e:
             log.log_error("stream_response", e)
             yield StreamEvent(type="error", text=f"Ollama error: {e}")
@@ -234,10 +253,11 @@ class Agent:
                 })
 
     async def _info_command(self) -> AsyncIterator[StreamEvent]:
-        """Fetch /api/ps and /api/show and yield a formatted content event."""
+        """Fetch Ollama server info, /api/ps and /api/show and yield a formatted content event."""
         model = self.config.model.name
 
-        running_models, show_data = await asyncio.gather(
+        version, running_models, show_data = await asyncio.gather(
+            self.client.get_version(),
             self.client.get_running_models(),
             self.client.get_model_info(model),
         )
@@ -262,7 +282,14 @@ class Agent:
 
         parts: list[str] = []
 
-        # ── Header ──────────────────────────────────────────────────────────
+        # ── Ollama server ────────────────────────────────────────────────────
+        server_rows: list[tuple[str, str]] = [
+            ("Version", version),
+            ("URL",     self.config.ollama.base_url),
+        ]
+        parts.append(section("Ollama", server_rows))
+
+        # ── Model header ─────────────────────────────────────────────────────
         parts.append(f"[bold]{mesc(model)}[/]")
 
         det = show_data.get("details", {})
@@ -340,6 +367,232 @@ class Agent:
         yield StreamEvent(type="markup", text="\n\n".join(parts))
         yield StreamEvent(type="done")
 
+    async def _poll_reconnect(self, timeout: float = 30.0) -> bool:
+        """Poll Ollama health until it responds or timeout expires. Returns True if reconnected."""
+        deadline = time.monotonic() + timeout
+        delay = 0.5
+        while time.monotonic() < deadline:
+            if await self.client.check_health():
+                return True
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 5.0)
+        return False
+
+    async def _ask_confirm(self, action_id: str, params: dict, *, default: bool = True) -> bool:
+        """Ask for confirmation if confirm_fn is set, otherwise return default."""
+        if self.tools.confirm_fn:
+            return await self.tools.confirm_fn(action_id, params)
+        return default
+
+    async def _stream_subprocess_output(self, proc: asyncio.subprocess.Process) -> AsyncIterator[StreamEvent]:
+        """Yield progress events for each non-empty line from proc.stdout, then wait."""
+        assert proc.stdout is not None
+        async for raw_line in proc.stdout:
+            line = raw_line.decode(errors="replace").rstrip()
+            if line:
+                yield StreamEvent(type="progress", text=line)
+        await proc.wait()
+
+    async def _pull_command(self, model: str) -> AsyncIterator[StreamEvent]:
+        """Pull a model from Ollama with live progress events."""
+        queue: asyncio.Queue = asyncio.Queue()
+
+        def _cb(status: str, completed: int, total: int) -> None:
+            if total > 0:
+                pct = completed * 100 // total
+                mb_done = completed // (1024 * 1024)
+                mb_total = total // (1024 * 1024)
+                text = f"{status}: {mb_done}/{mb_total} MB ({pct}%)"
+            else:
+                text = status
+            queue.put_nowait(StreamEvent(type="progress", text=text))
+
+        pull_task = asyncio.create_task(self.client.pull_model(model, callback=_cb))
+
+        while True:
+            try:
+                ev = await asyncio.wait_for(queue.get(), timeout=0.05)
+                yield ev
+            except asyncio.TimeoutError:
+                if pull_task.done():
+                    break
+
+        # Drain any final events the task put in just before finishing
+        while not queue.empty():
+            yield queue.get_nowait()
+
+        try:
+            success = pull_task.result()
+        except Exception as e:
+            yield StreamEvent(type="error", text=f"Pull failed: {e}")
+            yield StreamEvent(type="done")
+            return
+
+        if success:
+            yield StreamEvent(type="status", text=f"✓ Successfully pulled {model}")
+        else:
+            yield StreamEvent(type="error", text=f"Failed to pull {model}")
+        yield StreamEvent(type="done")
+
+    async def _pull_all_command(self) -> AsyncIterator[StreamEvent]:
+        """Pull every locally installed model to update them to the latest version."""
+        try:
+            models = await self.client.list_models()
+        except Exception as e:
+            yield StreamEvent(type="error", text=f"Failed to list models: {e}")
+            yield StreamEvent(type="done")
+            return
+
+        if not models:
+            yield StreamEvent(type="status", text="No local models found.")
+            yield StreamEvent(type="done")
+            return
+
+        names = [m["name"] for m in models]
+        yield StreamEvent(type="status", text=f"Pulling {len(names)} model(s): {', '.join(names)}")
+
+        failed: list[str] = []
+        for i, name in enumerate(names, 1):
+            yield StreamEvent(type="status", text=f"[{i}/{len(names)}] Pulling {name}...")
+            pull_failed = False
+            async for ev in self._pull_command(name):
+                if ev.type == "done":
+                    break
+                if ev.type == "error":
+                    pull_failed = True
+                yield ev
+            if pull_failed:
+                failed.append(name)
+
+        if failed:
+            yield StreamEvent(
+                type="status",
+                text=f"Completed: {len(names) - len(failed)}/{len(names)} succeeded. Failed: {', '.join(failed)}",
+            )
+        else:
+            yield StreamEvent(type="status", text=f"✓ All {len(names)} model(s) up to date.")
+        yield StreamEvent(type="done")
+
+    async def _detect_ollama_restart_cmd(self, system: str, is_brew: bool) -> str:
+        """Return the appropriate shell command to restart the Ollama server."""
+        if system == "Darwin":
+            if is_brew:
+                proc = await asyncio.create_subprocess_shell(
+                    "brew services list 2>/dev/null | grep -q '^ollama '",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await proc.wait()
+                if proc.returncode == 0:
+                    return "brew services restart ollama"
+            # Check for a launchd-managed Ollama service
+            proc = await asyncio.create_subprocess_shell(
+                "launchctl list 2>/dev/null | grep -q com.ollama",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            if proc.returncode == 0:
+                return "launchctl stop com.ollama.ollama 2>/dev/null; launchctl start com.ollama.ollama"
+            return "pkill -x ollama 2>/dev/null; sleep 1; ollama serve > /dev/null 2>&1 &"
+        if system == "Linux":
+            proc = await asyncio.create_subprocess_shell(
+                "systemctl is-active --quiet ollama 2>/dev/null",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            if proc.returncode == 0:
+                return "systemctl restart ollama"
+        return "pkill -x ollama 2>/dev/null; sleep 1; ollama serve > /dev/null 2>&1 &"
+
+    async def _update_ollama_command(self) -> AsyncIterator[StreamEvent]:
+        """Update Ollama to the latest version with confirmation and optional restart."""
+        system = platform.system()
+        if system not in ("Darwin", "Linux"):
+            yield StreamEvent(
+                type="status",
+                text=(
+                    f"Automatic update is not supported on {system}.\n"
+                    "Visit https://ollama.com/download to update manually."
+                ),
+            )
+            yield StreamEvent(type="done")
+            return
+
+        # Detect Homebrew vs direct install
+        ollama_path = shutil.which("ollama") or ""
+        is_brew = any(p in ollama_path for p in ["/homebrew", "/Homebrew", "/Cellar"])
+
+        if system == "Darwin" and is_brew:
+            update_cmd = "brew upgrade ollama"
+        else:
+            update_cmd = "curl -fsSL https://ollama.com/install.sh | sh"
+
+        allowed = await self._ask_confirm("ollama_update", {"command": update_cmd}, default=True)
+
+        if not allowed:
+            yield StreamEvent(type="status", text="Update cancelled.")
+            yield StreamEvent(type="done")
+            return
+
+        yield StreamEvent(type="status", text=f"Running: {update_cmd}")
+
+        proc = await asyncio.create_subprocess_shell(
+            update_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        async for ev in self._stream_subprocess_output(proc):
+            yield ev
+
+        if proc.returncode != 0:
+            yield StreamEvent(
+                type="error",
+                text=f"Update failed (exit {proc.returncode}). Try running manually:\n  {update_cmd}",
+            )
+            yield StreamEvent(type="done")
+            return
+
+        yield StreamEvent(type="status", text="✓ Ollama updated successfully.")
+
+        restart_allowed = await self._ask_confirm(
+            "ollama_restart",
+            {"action": "restart the Ollama server to apply the update"},
+            default=False,
+        )
+
+        if not restart_allowed:
+            yield StreamEvent(
+                type="status",
+                text="Restart skipped. Run 'ollama serve' (or restart the Ollama service) to use the updated version.",
+            )
+            yield StreamEvent(type="done")
+            return
+
+        restart_cmd = await self._detect_ollama_restart_cmd(system, is_brew)
+        yield StreamEvent(type="status", text=f"Restarting Ollama: {restart_cmd}")
+
+        restart_proc = await asyncio.create_subprocess_shell(
+            restart_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        async for ev in self._stream_subprocess_output(restart_proc):
+            yield ev
+
+        # Poll until Ollama is healthy again
+        yield StreamEvent(type="status", text="Waiting for Ollama to come back up...")
+        if await self._poll_reconnect(timeout=30.0):
+            ver = await self.client.get_version()
+            yield StreamEvent(type="status", text=f"✓ Ollama is back up (version {ver}).")
+        else:
+            yield StreamEvent(
+                type="status",
+                text="Ollama has not come back up yet. Start it manually with: ollama serve",
+            )
+        yield StreamEvent(type="done")
+
     async def process_input(self, user_input: str) -> AsyncIterator[StreamEvent]:
         """Process user input and yield stream events."""
         log.log_user_input(user_input)
@@ -347,13 +600,46 @@ class Agent:
         # Re-resolve if num_ctx config changes (always live) or context_size is still unknown.
         if self.config.model.num_ctx:
             self.context_size = self.config.model.num_ctx
-        elif not self.context_size:
-            # /api/ps gives the actual context_length the running model was loaded with
+        else:
+            # /api/ps gives the actual context_length the running model was loaded with.
+            # Re-check each turn: the model may not be loaded on the first call but will be
+            # on subsequent ones. Only fall back to /api/show's architecture default if the
+            # model isn't running yet and we have no value at all.
             loaded = await self.client.get_loaded_context_size(self.config.model.name)
-            self.context_size = loaded or await self.client.get_model_context_size(self.config.model.name)
+            if loaded:
+                self.context_size = loaded
+            elif not self.context_size:
+                self.context_size = await self.client.get_model_context_size(self.config.model.name)
 
-        # /info — async command, handled before CommandHandler
-        if user_input.strip().lower() == "/info":
+        # Async commands handled before CommandHandler (need streaming or platform calls)
+        stripped = user_input.strip()
+        cmd = stripped.lower()
+        if cmd.startswith("/pull"):
+            parts = stripped.split(maxsplit=1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            if arg.lower() == "all":
+                async for ev in self._pull_all_command():
+                    yield ev
+            else:
+                async for ev in self._pull_command(arg if arg else self.config.model.name):
+                    yield ev
+            return
+
+        if cmd.startswith("/update"):
+            parts = stripped.split(maxsplit=1)
+            subcmd = parts[1].strip().lower() if len(parts) > 1 else ""
+            if subcmd == "ollama":
+                async for ev in self._update_ollama_command():
+                    yield ev
+            elif subcmd == "models":
+                async for ev in self._pull_all_command():
+                    yield ev
+            else:
+                yield StreamEvent(type="status", text="Usage: /update ollama | /update models")
+                yield StreamEvent(type="done")
+            return
+
+        if cmd == "/info":
             async for ev in self._info_command():
                 yield ev
             return
@@ -398,6 +684,18 @@ class Agent:
                 self.config.model.thinking = True
                 yield StreamEvent(type="status", text="Thinking mode: ON (this message only)")
 
+        # Reconnect if Ollama became unavailable between turns (e.g. after /update-ollama)
+        if not await self.client.check_health():
+            yield StreamEvent(type="status", text="⚠ Ollama is not responding. Reconnecting...")
+            if await self._poll_reconnect():
+                yield StreamEvent(type="status", text="✓ Reconnected to Ollama.")
+            else:
+                yield StreamEvent(
+                    type="error",
+                    text="Could not reconnect to Ollama after 30s. Is it still running?",
+                )
+                return
+
         # Add user message to history
         self.history.append({"role": "user", "content": user_input})
         self._step_count = 0
@@ -419,6 +717,11 @@ class Agent:
                 return
 
             messages = self._build_messages()
+            # Char-based token estimate: 4 chars ≈ 1 token. Include tool schema
+            # chars since they are sent on every call but not counted by
+            # _build_messages. This gives a realistic estimate even when KV-cache
+            # causes Ollama's prompt_eval_count to report only the delta.
+            self.last_prompt_tokens = (self._last_build_chars + _TOOL_SCHEMAS_CHARS) // 4
 
             # Stream response from Ollama
             content_acc = ""
@@ -439,9 +742,10 @@ class Agent:
                 elif ev.type == "_eval_count":
                     eval_count = int(ev.text)
                 elif ev.type == "_prompt_eval_count":
+                    # Use max of char estimate and Ollama's report. Ollama's value is
+                    # accurate on a full evaluation but undercounts on KV-cache hits.
                     reported = int(ev.text)
-                    self._peak_prompt_tokens = max(self._peak_prompt_tokens, reported)
-                    self.last_prompt_tokens = self._peak_prompt_tokens
+                    self.last_prompt_tokens = max(self.last_prompt_tokens, reported)
                 elif ev.type == "error":
                     had_error = True
                     yield ev

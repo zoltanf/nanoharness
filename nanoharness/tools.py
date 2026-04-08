@@ -79,6 +79,12 @@ def format_confirm_preview(tool_name: str, args: dict) -> str:
         path = args.get("path", "")
         size = len(args.get("content", ""))
         return f"write_file\n  path: {path}  size: {size} bytes"
+    if tool_name == "ollama_update":
+        cmd = args.get("command", "")
+        return f"Update Ollama\n  $ {cmd}"
+    if tool_name == "ollama_restart":
+        action = args.get("action", "restart the Ollama server")
+        return f"Restart Ollama\n  {action}"
     return tool_name
 
 

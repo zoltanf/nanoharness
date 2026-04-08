@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/todo", "/help", "/quit", "/exit", "/safety"]
+COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/pull", "/update", "/todo", "/tools", "/help", "/quit", "/exit", "/safety"]
 
 THINK_OPTIONS = ["on", "off", "once"]
-SAFETY_OPTIONS = ["workspace", "unrestricted", "confirm"]
+SAFETY_OPTIONS = ["workspace", "confirm", "none"]
+_THINK_VALID = ("on", "off", "once", "true", "false", "yes", "no")
+_UPDATE_SUBCMDS = ("ollama", "models")
 CONFIG_KEYS = [
     "model.name",
     "model.thinking",
@@ -21,30 +23,89 @@ CONFIG_KEYS = [
 
 
 def is_incomplete_command(line: str) -> bool:
-    """Return True if input is a partial command prefix that shouldn't be sent.
+    """Return True if the input looks like a command but must not be sent yet.
 
-    Examples:
-        "/thi"       -> True  (partial, matches /think but isn't complete)
-        "/think"     -> False (valid command, no required args)
-        "/think on"  -> False (valid)
-        "/c"         -> True  (ambiguous partial)
-        "/clear"     -> False (valid)
-        "hello"      -> False (not a command at all)
-        "/foo"       -> False (unknown command, let the handler report the error)
-        "/"          -> True  (bare slash)
+    Blocked cases:
+        "/thi"         partial prefix (ambiguous)
+        "/c"           partial prefix (ambiguous)
+        "/"            bare slash
+        "/foo"         unknown command
+        "/think xyz"   recognised command with invalid argument
+        "/safety xyz"  recognised command with invalid argument
+        "/update xyz"  recognised command with invalid argument
+
+    Allowed (returns False):
+        "hello"        plain text — not a command
+        "/think"       valid command, no arg (toggles)
+        "/think on"    valid command + valid arg
+        "/update ollama"  valid subcommand
+        "/workspace"   valid, no arg (shows current)
     """
     stripped = line.strip()
     if not stripped.startswith("/"):
         return False
-    cmd_part = stripped.split()[0].lower()
-    # Exact match to a known command — not incomplete
-    if cmd_part in COMMANDS:
-        return False
-    # Partial prefix that matches at least one command — incomplete
-    if any(c.startswith(cmd_part) for c in COMMANDS):
+
+    parts = stripped.split(maxsplit=1)
+    cmd_part = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    first_arg = arg.lower().split()[0] if arg else ""
+
+    # Unknown or partial-prefix command — block it
+    if cmd_part not in COMMANDS:
         return True
-    # No match at all (e.g. "/foo") — let it through so handler can show "unknown command"
+
+    # Known command: validate argument for those with a fixed single-word value set.
+    # We check the FULL arg string (not just the first word) so that e.g.
+    # "/think once blablabla" is blocked — the extra text is not expected.
+    if arg:
+        arg_lower = arg.lower()
+        if cmd_part == "/think":
+            return arg_lower not in _THINK_VALID
+        if cmd_part == "/safety":
+            return arg_lower not in SAFETY_OPTIONS
+        if cmd_part == "/update":
+            return arg_lower not in _UPDATE_SUBCMDS
+
     return False
+
+
+def command_send_error(line: str) -> str:
+    """Return a short, human-readable reason why this command is blocked from sending.
+
+    Returns an empty string when the input is fine to send (or is not a command).
+    Intended for display in the hint line / REPL feedback.
+    """
+    stripped = line.strip()
+    if not stripped.startswith("/") or not is_incomplete_command(stripped):
+        return ""
+
+    parts = stripped.split(maxsplit=1)
+    cmd_part = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    arg_lower = arg.lower()
+    first_arg = arg_lower.split()[0] if arg_lower else ""
+
+    if cmd_part not in COMMANDS:
+        matches = [c for c in COMMANDS if c.startswith(cmd_part)]
+        if matches:
+            return f"Incomplete — did you mean: {', '.join(matches[:4])}?"
+        return f"Unknown command '{cmd_part}'. Type /help to see all commands."
+
+    if arg:
+        # Distinguish "wrong value" from "valid value + unexpected trailing text"
+        def _arg_error(valid: tuple[str, ...], usage: str) -> str:
+            if first_arg in valid:
+                return f"Unexpected text after '{first_arg}' — usage: {cmd_part} {usage}"
+            return f"{cmd_part}: expected {usage}, got '{first_arg}'"
+
+        if cmd_part == "/think":
+            return _arg_error(_THINK_VALID, "on | off | once")
+        if cmd_part == "/safety":
+            return _arg_error(tuple(SAFETY_OPTIONS), " | ".join(SAFETY_OPTIONS))
+        if cmd_part == "/update":
+            return _arg_error(_UPDATE_SUBCMDS, "ollama | models")
+
+    return "Invalid command syntax."
 
 # Maps each command to (arg_hint, description)
 COMMAND_HINTS: dict[str, tuple[str, str]] = {
@@ -55,6 +116,9 @@ COMMAND_HINTS: dict[str, tuple[str, str]] = {
     "/clear":     ("",                          "Clear conversation history"),
     "/config":    ("[set KEY VAL]",             "Show/edit configuration"),
     "/info":      ("",                          "Show model details from Ollama"),
+    "/pull":      ("[model|all]",                "Pull a model; 'all' pulls every local model"),
+    "/update":    ("ollama|models",             "Update Ollama binary or pull all local models"),
+    "/tools":     ("",                              "List available tools"),
     "/todo":      ("[list|clear|add|done|remove]", "Manage task list"),
     "/help":      ("",                          "Show available commands"),
     "/quit":      ("",                          "Exit NanoHarness"),
@@ -76,12 +140,25 @@ def hint_for_input(line: str) -> str:
     """
     stripped = line.lstrip()
     if not stripped.startswith("/"):
-        # Check for a trailing /command token (command embedded in longer text)
+        # The line is a regular message that may have an embedded /command at the end.
+        # Only /think makes sense mid-message, so we restrict hints accordingly.
         parts = stripped.rsplit(None, 1)
         last_token = parts[-1] if parts else ""
+
+        # "text /think <partial_opt>" — last token is the partial option word
+        if not last_token.startswith("/") and len(parts) > 1:
+            prev = parts[0].rsplit(None, 1)
+            if prev[-1].lower() == "/think":
+                opts = [o for o in THINK_OPTIONS if o.startswith(last_token.lower())]
+                return f"/think {' | '.join(opts)}" if opts else ""
+
+        # "text /" or "text /th..." — last token is the partial command
         if last_token.startswith("/") and len(parts) > 1:
-            # Delegate to the inline command token
-            return hint_for_input(last_token)
+            cmd_lower = last_token.lower()
+            if "/think".startswith(cmd_lower):
+                return "/think on|off|once  Toggle thinking mode"
+            return ""
+
         return ""
 
     parts = stripped.split(maxsplit=1)
@@ -140,6 +217,12 @@ def hint_for_input(line: str) -> str:
                 if matching:
                     return "  ".join(matching)
             return ""
+        # /update with partial subcommand
+        if cmd_part == "/update":
+            opts = [o for o in _UPDATE_SUBCMDS if o.startswith(arg_part)]
+            if opts:
+                return f"/update {' | '.join(opts)}"
+            return ""
         # /safety with partial arg
         if cmd_part == "/safety" and arg_part:
             opts = [o for o in SAFETY_OPTIONS if o.startswith(arg_part)]
@@ -159,24 +242,36 @@ def abs_dir_matches(partial: str) -> list[str]:
         if not partial:
             home = Path.home()
             return sorted(
-                f"~/{e.name}/"
+                f"~/{e.name}"
                 for e in home.iterdir()
                 if e.is_dir() and not e.name.startswith(".")
             )
         expanded = os.path.expanduser(partial)
         p = Path(expanded)
-        parent = p.parent if p.is_absolute() else (Path.cwd() / partial).parent
-        prefix = p.name
+        # When the partial already ends with "/" the user has typed a complete
+        # directory name and wants to see what's *inside* it — use it as the
+        # parent and match all entries (empty prefix).
+        if partial.endswith("/") and p.is_dir():
+            parent = p
+            prefix = ""
+        elif p.is_absolute():
+            parent = p.parent
+            prefix = p.name
+        else:
+            base = Path.cwd() / partial
+            parent = base.parent
+            prefix = base.name
         if not parent.is_dir():
             return []
         home_str = str(Path.home())
         matches = []
+        prefix_lower = prefix.lower()
         for entry in parent.iterdir():
             if not entry.is_dir() or entry.name.startswith("."):
                 continue
-            if entry.name.startswith(prefix):
+            if entry.name.lower().startswith(prefix_lower):
                 full = str(entry)
-                completion = ("~" + full[len(home_str):] if full.startswith(home_str) else full) + "/"
+                completion = "~" + full[len(home_str):] if full.startswith(home_str) else full
                 matches.append(completion)
         return sorted(matches)
     except OSError:
@@ -188,7 +283,7 @@ def dir_matches(base: Path, partial: str) -> list[str]:
     try:
         if not partial:
             return sorted(
-                f"{e.name}/"
+                e.name
                 for e in base.iterdir()
                 if e.is_dir() and not e.name.startswith(".")
             )
@@ -200,13 +295,13 @@ def dir_matches(base: Path, partial: str) -> list[str]:
         if not parent.is_dir():
             return []
 
+        prefix_lower = prefix.lower()
         matches = []
         for entry in parent.iterdir():
             if not entry.is_dir() or entry.name.startswith("."):
                 continue
-            if entry.name.startswith(prefix):
+            if entry.name.lower().startswith(prefix_lower):
                 rel = str(entry.relative_to(base))
-                rel += "/"
                 matches.append(rel)
 
         return sorted(matches)
@@ -219,7 +314,7 @@ def path_matches(workspace: Path, partial: str) -> list[str]:
     try:
         if not partial:
             return sorted(
-                f"{e.name}/" if e.is_dir() else e.name
+                e.name
                 for e in workspace.iterdir()
                 if not e.name.startswith(".")
             )
@@ -231,14 +326,13 @@ def path_matches(workspace: Path, partial: str) -> list[str]:
         if not parent.is_dir():
             return []
 
+        prefix_lower = prefix.lower()
         matches = []
         for entry in parent.iterdir():
             if entry.name.startswith("."):
                 continue
-            if entry.name.startswith(prefix):
+            if entry.name.lower().startswith(prefix_lower):
                 rel = str(entry.relative_to(workspace))
-                if entry.is_dir():
-                    rel += "/"
                 matches.append(rel)
 
         return sorted(matches)
@@ -263,6 +357,11 @@ def complete_line(workspace: Path, line: str) -> list[str]:
         partial = stripped[len("/think "):].lstrip().lower()
         return [f"/think {o}" for o in THINK_OPTIONS if o.startswith(partial)]
 
+    # /update <subcommand> — complete ollama|models
+    if stripped.lower().startswith("/update "):
+        partial = stripped[len("/update "):].lstrip().lower()
+        return [f"/update {o}" for o in _UPDATE_SUBCMDS if o.startswith(partial)]
+
     # /config set <key> [value] — complete keys and enum values
     if stripped.lower().startswith("/config "):
         rest = stripped[len("/config "):].lstrip()
@@ -285,9 +384,49 @@ def complete_line(workspace: Path, line: str) -> list[str]:
             return [f"/config set {key} {o}" for o in opts]
         return []
 
-    # Fall back to token-based completion on last word
+    # Fall back to token-based completion on last word.
+    # Split at last whitespace to separate the "active token" from any prefix.
     parts = stripped.rsplit(None, 1)
+    has_prefix = len(parts) > 1  # there is content before the active token
+
+    # -----------------------------------------------------------------------
+    # Embedded /think detection: the user appended /think (or a partial) to a
+    # regular message.  Only /think makes sense mid-message; other slash
+    # commands are standalone.
+    # -----------------------------------------------------------------------
+
+    # Case A: trailing space after "/think" — offer all subcommands.
+    # e.g.  "refactor this /think "
+    if stripped.endswith(" "):
+        last_word = parts[-1].lower() if parts else ""
+        if last_word == "/think":
+            return ["/think once", "/think on", "/think off"]
+        return []
+
     last_token = parts[-1] if parts else ""
+
+    # Case B: last token is a plain word preceded by "/think"
+    # e.g.  "refactor this /think o"  →  parts = ["refactor this /think", "o"]
+    if has_prefix and not last_token.startswith("/"):
+        prev = parts[0].rsplit(None, 1)
+        if prev[-1].lower() == "/think":
+            return [
+                f"/think {o}"
+                for o in ("once", "on", "off")
+                if o.startswith(last_token.lower())
+            ]
+        return complete_token(workspace, last_token)
+
+    # Case C: last token starts with "/" (bare "/" or partial command)
+    if last_token.startswith("/"):
+        if has_prefix:
+            # Embedded after real content — only /think is useful mid-message.
+            if "/think".startswith(last_token.lower()):
+                return ["/think once", "/think on", "/think off"]
+            return []
+        # Standalone command at the start of the line.
+        return complete_token(workspace, last_token)
+
     return complete_token(workspace, last_token)
 
 

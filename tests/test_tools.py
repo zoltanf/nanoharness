@@ -256,6 +256,16 @@ class TestFormatConfirmPreview:
         assert "foo.txt" in preview
         assert "5 bytes" in preview
 
+    def test_ollama_update(self):
+        preview = format_confirm_preview("ollama_update", {"command": "brew upgrade ollama"})
+        assert "Update Ollama" in preview
+        assert "brew upgrade ollama" in preview
+
+    def test_ollama_restart(self):
+        preview = format_confirm_preview("ollama_restart", {"action": "restart the Ollama server to apply the update"})
+        assert "Restart Ollama" in preview
+        assert "restart the Ollama server" in preview
+
 
 class TestTodo:
     def test_add(self, workspace: Path):

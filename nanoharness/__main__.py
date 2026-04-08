@@ -15,11 +15,11 @@ except ImportError:
 
 from .config import load_config, parse_args, WARN_SAFETY_NONE, WARN_DEBUG_ON
 from .tools import format_confirm_preview
-from . import BANNER as _BANNER
+from . import BANNER as _BANNER, __version__
 from .ollama import OllamaClient
-from .startup import check_ollama, check_model, check_version, print_install_instructions
+from .startup import check_ollama, check_model, check_version, print_install_instructions, try_start_ollama
 from .agent import Agent, StreamEvent
-from .completion import is_incomplete_command, hint_for_input
+from .completion import is_incomplete_command, hint_for_input, command_send_error
 from . import logging as log
 
 
@@ -61,7 +61,9 @@ async def run_repl(agent: Agent) -> int:
     agent.tools.confirm_fn = _repl_confirm
     print(_BANNER)
     print()
-    print(f"v0.1.0 — {agent.config.model.name} — {agent.config.workspace}")
+    ollama_ver = await agent.client.get_version()
+    print(f"v{__version__} — {agent.config.model.name} — {agent.config.workspace}")
+    print(f"Ollama {ollama_ver} — {agent.config.ollama.base_url}")
     print(f"Thinking: {'on' if agent.config.model.thinking else 'off'} | Safety: {agent.config.safety.level}")
     if agent.config.debug:
         print(WARN_DEBUG_ON)
@@ -80,13 +82,25 @@ async def run_repl(agent: Agent) -> int:
             continue
 
         if is_incomplete_command(user_input):
-            hint = hint_for_input(user_input)
-            if hint:
-                print(f"  {hint}")
+            err = command_send_error(user_input)
+            if err:
+                print(f"  {err}")
+            else:
+                hint = hint_for_input(user_input)
+                if hint:
+                    print(f"  {hint}")
             continue
 
         try:
+            _in_progress = False
             async for event in agent.process_input(user_input):
+                if event.type == "progress":
+                    _in_progress = True
+                    print(f"\r  {event.text:<78}", end="", flush=True)
+                    continue
+                if _in_progress:
+                    print()
+                    _in_progress = False
                 match event.type:
                     case "content":
                         print(event.text, end="", flush=True)
@@ -158,8 +172,8 @@ async def async_main() -> int:
     try:
         # Startup checks
         if not await check_ollama(config, client):
-            print_install_instructions(config)
-            return 1
+            if not await try_start_ollama(config, client):
+                return 1
 
         if not await check_model(config, client):
             print(f"Cannot proceed without model '{config.model.name}'.")

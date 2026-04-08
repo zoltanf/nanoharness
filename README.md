@@ -9,6 +9,8 @@ Lightweight AI coding agent for local LLMs via [Ollama](https://ollama.com). Run
 - Workspace safety: file/shell ops sandboxed to a working directory
 - Tab completion and inline command hints
 - Web UI with WebSocket streaming (optional)
+- Auto-start Ollama at launch (brew services or background `ollama serve`)
+- Automatic reconnect if Ollama goes away mid-session
 
 ## Requirements
 
@@ -55,9 +57,13 @@ uv run python -m nanoharness --repl
 |---|---|
 | `/think [on\|off\|once]` | Toggle thinking mode |
 | `/workspace <dir>` | Switch working directory |
+| `/pull [model\|all]` | Pull a model; `all` updates every locally installed model |
+| `/update ollama` | Update the Ollama binary (detects brew vs manual install) |
+| `/update models` | Alias for `/pull all` |
+| `/info` | Show model details, Ollama server version, and URL |
 | `/clear` | Clear conversation history |
 | `/config [set KEY VAL]` | Show or edit configuration |
-| `/info` | Show model details from Ollama |
+| `/safety <level>` | Set safety level for this session |
 | `/help` | List all commands |
 | `/quit` | Exit |
 | `!<cmd>` | Run a shell command directly |
@@ -78,7 +84,7 @@ timeout_seconds = 120
 max_output_chars = 8000
 
 [safety]
-level = "workspace"   # workspace | unrestricted
+level = "workspace"   # workspace | confirm | none
 
 [ollama]
 base_url = "http://localhost:11434"

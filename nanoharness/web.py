@@ -292,6 +292,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   /* Status/error messages */
   .msg-status { color: var(--fg-dim); font-size: 13px; font-style: italic; white-space: pre-wrap; font-family: var(--mono); }
   .msg-error { color: var(--red); font-weight: 600; }
+  .msg-progress { color: var(--fg-dim); font-size: 13px; font-family: var(--mono); white-space: pre; overflow: hidden; text-overflow: ellipsis; }
   .msg-warning { color: var(--yellow); font-weight: 600; font-size: 13px; font-family: var(--mono); white-space: pre-wrap; }
 
   /* Welcome banner */
@@ -360,6 +361,7 @@ let thinkingBuf = '';
 let currentAssistantEl = null;
 let currentContentEl = null;
 let currentThinkingEl = null;
+let progressEl = null;
 let history = [];
 let historyIdx = -1;
 
@@ -499,6 +501,16 @@ function handleEvent(ev) {
       scrollBottom();
       break;
 
+    case 'progress':
+      if (!progressEl) {
+        progressEl = document.createElement('div');
+        progressEl.className = 'msg-progress';
+        chat.appendChild(progressEl);
+      }
+      progressEl.textContent = ev.text;
+      scrollBottom();
+      break;
+
     case 'markup':
       hideSpinner();
       flushAssistant();
@@ -554,6 +566,7 @@ function handleEvent(ev) {
     case 'done':
       hideSpinner();
       flushAssistant();
+      progressEl = null;
       setProcessing(false);
       if (ev.text === 'quit') {
         fetch('/api/shutdown', {method: 'POST'}).finally(() => window.close());
@@ -696,11 +709,24 @@ function hideSpinner() {
 
 // --- Input ---
 function isIncompleteCommand(line) {
-  const s = line.trim().toLowerCase();
+  const s = line.trim();
   if (!s.startsWith('/')) return false;
-  const cmdPart = s.split(/\s/)[0];
-  if (COMMANDS.includes(cmdPart)) return false;
-  return COMMANDS.some(c => c.startsWith(cmdPart));
+  const parts = s.split(/\s+/);
+  const cmdPart = parts[0].toLowerCase();
+  const firstArg = (parts[1] || '').toLowerCase();
+
+  // Unknown or partial-prefix command
+  if (!COMMANDS.includes(cmdPart)) return true;
+
+  // Known command: validate first argument for those with a fixed set
+  if (firstArg) {
+    if (cmdPart === '/think') {
+      return !['on','off','once','true','false','yes','no'].includes(firstArg);
+    }
+    if (cmdPart === '/safety') return !SAFETY_OPTIONS.includes(firstArg);
+    if (cmdPart === '/update') return !UPDATE_OPTIONS.includes(firstArg);
+  }
+  return false;
 }
 
 function sendMessage() {
@@ -733,19 +759,26 @@ function sendMessage() {
 
 // --- Inline hints & tab completion ---
 const hintEl = document.getElementById('hint-line');
-const COMMANDS = ['/think', '/workspace', '/code', '/clear', '/config', '/info', '/todo', '/help', '/quit'];
+const COMMANDS = ['/think', '/workspace', '/code', '/lazygit', '/clear', '/config', '/info', '/pull', '/update', '/todo', '/safety', '/help', '/quit', '/exit'];
 const COMMAND_HINTS = {
   '/think':     ['on|off|once',               'Toggle thinking mode'],
   '/workspace': ['<dir>',                     'Switch workspace directory'],
   '/code':      ['',                          'Open workspace in VS Code'],
+  '/lazygit':   ['',                          'Open lazygit in a new terminal window'],
   '/clear':     ['',                          'Clear conversation history'],
-  '/config':    ['',                          'Show current configuration'],
+  '/config':    ['[set KEY VAL]',             'Show or edit configuration'],
   '/info':      ['',                          'Show model details from Ollama'],
-  '/todo':      ['list|clear|add|done|remove','Manage task list'],
+  '/pull':      ['[model|all]',               "Pull a model; 'all' pulls every local model"],
+  '/update':    ['ollama|models',             'Update Ollama binary or pull all local models'],
+  '/todo':      ['[list|clear|add|done|remove]','Manage task list'],
+  '/safety':    ['confirm|workspace|none',    'Set session safety level'],
   '/help':      ['',                          'Show available commands'],
   '/quit':      ['',                          'Exit NanoHarness'],
+  '/exit':      ['',                          'Exit NanoHarness'],
 };
 const THINK_OPTIONS = ['on', 'off', 'once'];
+const SAFETY_OPTIONS = ['confirm', 'workspace', 'none'];
+const UPDATE_OPTIONS = ['ollama', 'models'];
 
 function getHint(line) {
   const s = line.trimStart();
@@ -778,6 +811,14 @@ function getHint(line) {
       const opts = THINK_OPTIONS.filter(o => o.startsWith(argPart));
       return opts.length ? '/think ' + opts.join(' | ') : '';
     }
+    if (cmdPart === '/safety' && argPart) {
+      const opts = SAFETY_OPTIONS.filter(o => o.startsWith(argPart));
+      return opts.length ? '/safety ' + opts.join(' | ') : '';
+    }
+    if (cmdPart === '/update' && argPart) {
+      const opts = UPDATE_OPTIONS.filter(o => o.startsWith(argPart));
+      return opts.length ? '/update ' + opts.join(' | ') : '';
+    }
     if (cmdPart === '/workspace' && argPart) return '';
     return desc ? cmdPart + ' ' + argH + '  ' + desc : cmdPart + ' ' + argH;
   }
@@ -809,6 +850,16 @@ function getCompletions(line) {
   if (s.startsWith('/think ')) {
     const partial = s.slice(7).trimStart();
     return THINK_OPTIONS.filter(o => o.startsWith(partial)).map(o => '/think ' + o);
+  }
+  // /safety <partial>
+  if (s.startsWith('/safety ')) {
+    const partial = s.slice(8).trimStart();
+    return SAFETY_OPTIONS.filter(o => o.startsWith(partial)).map(o => '/safety ' + o);
+  }
+  // /update <partial>
+  if (s.startsWith('/update ')) {
+    const partial = s.slice(8).trimStart();
+    return UPDATE_OPTIONS.filter(o => o.startsWith(partial)).map(o => '/update ' + o);
   }
   // bare /command prefix
   if (s.startsWith('/') && !s.includes(' ')) {

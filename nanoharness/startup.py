@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
+import shutil
+import subprocess
 import sys
+import time
 from typing import Callable
 
 from .config import Config
@@ -52,7 +56,6 @@ async def check_version(client: OllamaClient) -> list[str]:
 
     # Also check for CLI/server mismatch
     try:
-        import asyncio
         result = await asyncio.create_subprocess_exec(
             "ollama", "--version",
             stdout=asyncio.subprocess.PIPE,
@@ -143,3 +146,89 @@ async def check_model(
 
 def print_install_instructions(config: Config) -> None:
     print(INSTALL_INSTRUCTIONS.format(url=config.ollama.base_url))
+
+
+async def try_start_ollama(config: Config, client: OllamaClient) -> bool:
+    """Detect how Ollama is installed, offer to start it, and poll until healthy.
+
+    Decision tree:
+      • brew-managed formula  → offer ``brew services start ollama``
+      • ollama on PATH only   → offer ``ollama serve`` (detached background process)
+      • not installed at all  → print install instructions and return False
+
+    Returns True if Ollama is responding after the start attempt.
+    """
+    url = config.ollama.base_url
+    ollama_bin = shutil.which("ollama")
+    brew_bin = shutil.which("brew")
+    brew_managed = False
+
+    # Check whether ollama appears in `brew services list` (formula installs only).
+    # This works even when Ollama is stopped — brew always lists registered services.
+    if brew_bin and ollama_bin:
+        try:
+            r = await asyncio.create_subprocess_exec(
+                brew_bin, "services", "list",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await r.communicate()
+            brew_managed = any(
+                line.split()[:1] == [b"ollama"]
+                for line in out.splitlines()
+            )
+        except Exception:
+            pass
+
+    if not ollama_bin and not brew_managed:
+        print_install_instructions(config)
+        return False
+
+    # --- Prompt user ---
+    print(f"Ollama is not running at {url}.")
+    if brew_managed:
+        print("Start Ollama via Homebrew? (brew services start ollama) [Y/n] ", end="", flush=True)
+    else:
+        print("Start Ollama in the background? (ollama serve) [Y/n] ", end="", flush=True)
+
+    try:
+        answer = input()
+    except EOFError:
+        answer = "n"
+
+    if answer.strip().lower() not in ("", "y", "yes"):
+        return False
+
+    # --- Start Ollama ---
+    if brew_managed:
+        proc = await asyncio.create_subprocess_exec(
+            brew_bin, "services", "start", "ollama",  # type: ignore[arg-type]
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+    else:
+        # Detach so the serve process outlives this prompt and keeps running
+        # after the parent process moves on.
+        subprocess.Popen(
+            [ollama_bin, "serve"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    # --- Poll until healthy (up to 15 s) ---
+    print("Starting Ollama", end="", flush=True)
+    deadline = time.monotonic() + 15.0
+    delay = 0.5
+    while time.monotonic() < deadline:
+        if await client.check_health():
+            print(" ✓")
+            return True
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.5, 2.0)
+        print(".", end="", flush=True)
+
+    print()
+    print("Timed out waiting for Ollama to start. Try running it manually.")
+    return False

@@ -10,8 +10,8 @@ There are three safety levels, configured with `--safety`, `NANO_SAFETY`, or `/s
 
 | Level | Default | Purpose |
 |-------|---------|---------|
-| `workspace` | Yes | Workspace containment + environment scrubbing |
-| `confirm` | No | Everything in `workspace`, plus user approval for destructive tools |
+| `workspace` | Yes | Workspace path containment + environment scrubbing |
+| `confirm` | No | Everything in `workspace`, plus user approval before destructive tools run |
 | `none` | No | No restrictions — full trust mode |
 
 ### `workspace` (default)

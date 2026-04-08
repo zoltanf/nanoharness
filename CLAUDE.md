@@ -52,11 +52,11 @@ The central async loop: user input → build messages (system + truncated histor
 
 ### Streaming Events
 
-`StreamEvent` types: `content`, `thinking`, `tool_call`, `tool_result`, `status`, `error`, `done`. Serialized via `.to_dict()` for WebSocket/SSE transport. All UI modes consume the same event stream.
+`StreamEvent` types: `content`, `thinking`, `tool_call`, `tool_result`, `status`, `error`, `done`, `progress`. The `progress` type carries incremental text lines (e.g. from `ollama pull` or `ollama serve` output) and is rendered in-place rather than appended as a new message. Serialized via `.to_dict()` for WebSocket/SSE transport. All UI modes consume the same event stream.
 
 ### Config Layering (`config.py`)
 
-Precedence (highest to lowest): CLI args → env vars (`NANO_*`) → TOML (`~/.nanoharness/config.toml`) → dataclass defaults. Key config: `model.name`, `model.thinking`, `agent.max_steps`, `safety.level` ("workspace"/"unrestricted").
+Precedence (highest to lowest): CLI args → env vars (`NANO_*`) → TOML (`~/.nanoharness/config.toml`) → dataclass defaults. Key config: `model.name`, `model.thinking`, `agent.max_steps`, `safety.level` (`"workspace"` / `"confirm"` / `"none"`).
 
 ### Tool Execution (`tools.py`)
 
@@ -74,6 +74,17 @@ Textual app using `VerticalScroll` with dynamically mounted `Static` widgets. St
 
 Shared by REPL and TUI: `complete_line()` for context-aware tab completion, `hint_for_input()` for inline hints, `is_incomplete_command()` to block sending partial command prefixes. Web UI reimplements these in JS.
 
+`complete_line` handles full-line replacements for `/workspace`, `/think`, `/update`, and `/config` (subcommand/arg completion). The fallback token path returns `[]` immediately when the input ends with a trailing space to avoid spurious path completions. `_do_tab_complete` in `tui.py` maintains a matching list of "full-line" command prefixes so that the prefix calculation does not double-prepend when cycling through suggestions.
+
+### Startup Checks (`startup.py`)
+
+`check_ollama` → `check_model` → `check_version` run in order before the UI launches. If `check_ollama` fails, `try_start_ollama` detects how Ollama is installed:
+- **brew-managed** (found in `brew services list`): prompts to run `brew services start ollama`
+- **PATH-only**: prompts to launch `ollama serve` as a detached background process (`subprocess.Popen(..., start_new_session=True)`)
+- **Not installed**: prints install instructions and exits
+
+After starting, polls `check_health()` with exponential back-off for up to 15 s.
+
 ## Test Infrastructure
 
 - `tests/conftest.py`: `workspace` fixture (tmp_path with test files), `config`, `mock_client` (AsyncMock of OllamaClient), `pw_server_url` (session-scoped live server for Playwright)
@@ -87,3 +98,10 @@ Shared by REPL and TUI: `complete_line()` for context-aware tab completion, `hin
 - `/think once` is stateful: sets thinking on for one turn, then `consume_think_once()` resets it at all exit points in `process_input()`
 - Ollama communication uses raw `httpx` (no SDK) against `/api/chat` with NDJSON streaming
 - The agent maintains `history` (list of message dicts) with token-budget truncation (~200k tokens)
+- **Reconnect**: Before each LLM turn, `check_health()` is called; on failure `_poll_reconnect(timeout=30)` retries with exponential back-off (check first, then sleep: 0.5 s → 5 s cap)
+- **`_ask_confirm(action_id, params, *, default)`**: single gating point for optional user confirmation (delegates to `tools.confirm_fn` if set, else returns `default`)
+- **`_stream_subprocess_output(proc)`**: shared async helper that reads stdout line-by-line and yields `progress` events; used by `/pull` and `/update ollama` to avoid duplicated streaming loops
+- **`/pull [model|all]`**: bridges Ollama's sync pull callback to an async generator via `asyncio.Queue`; `/pull all` lists models then iterates, collecting failures for a summary line
+- **`/update ollama`**: uses `shutil.which` to find the Ollama binary, detects brew vs manual install, runs the appropriate upgrade command through `_stream_subprocess_output`, then optionally restarts the server
+- **`/info`**: uses `asyncio.gather` to fetch server version, running models, and model show-data in parallel before rendering
+- **Startup version display**: `on_mount` in `tui.py` is `async` so it can `await client.get_version()` before rendering the welcome banner; REPL does the same in its async startup sequence
