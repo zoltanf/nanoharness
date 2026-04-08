@@ -32,8 +32,7 @@ Commands:
   /clear                      Clear conversation history
   /config                     Show current configuration
   /config set KEY VAL         Edit a config value (saved to ~/.nanoharness/config.toml)
-  /tools                      List available tools and their descriptions
-  /info                       Show model details from Ollama
+  /info [prompt|tools]        Show model details, current system prompt, or available tools
   /pull [model|all]           Pull a model (defaults to current); 'all' pulls every local model
   /update ollama              Update Ollama to the latest version
   /update models              Pull all local models (alias for /pull all)
@@ -212,14 +211,6 @@ class CommandHandler:
                     return CommandResult(output=f"Opening lazygit in new terminal: {self.config.workspace}")
                 except Exception as e:
                     return CommandResult(output=f"Error launching lazygit: {e}")
-
-            case "/tools":
-                from .tools import TOOL_SCHEMAS
-                lines = ["Available tools:"]
-                for t in TOOL_SCHEMAS:
-                    fn = t["function"]
-                    lines.append(f"  {fn['name']:<14} {fn['description']}")
-                return CommandResult(output="\n".join(lines))
 
             case "/todo":
                 return self._todo_command(arg)

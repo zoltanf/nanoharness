@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/pull", "/update", "/todo", "/tools", "/help", "/quit", "/exit", "/safety"]
+COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/pull", "/update", "/todo", "/help", "/quit", "/exit", "/safety"]
 
 THINK_OPTIONS = ["on", "off", "once"]
 SAFETY_OPTIONS = ["workspace", "confirm", "none"]
 _THINK_VALID = ("on", "off", "once", "true", "false", "yes", "no")
 _UPDATE_SUBCMDS = ("ollama", "models")
+_INFO_SUBCMDS = ("prompt", "tools")
 CONFIG_KEYS = [
     "model.name",
     "model.thinking",
@@ -65,6 +66,8 @@ def is_incomplete_command(line: str) -> bool:
             return arg_lower not in SAFETY_OPTIONS
         if cmd_part == "/update":
             return arg_lower not in _UPDATE_SUBCMDS
+        if cmd_part == "/info":
+            return arg_lower not in _INFO_SUBCMDS
 
     return False
 
@@ -104,6 +107,8 @@ def command_send_error(line: str) -> str:
             return _arg_error(tuple(SAFETY_OPTIONS), " | ".join(SAFETY_OPTIONS))
         if cmd_part == "/update":
             return _arg_error(_UPDATE_SUBCMDS, "ollama | models")
+        if cmd_part == "/info":
+            return _arg_error(_INFO_SUBCMDS, "prompt | tools")
 
     return "Invalid command syntax."
 
@@ -115,10 +120,9 @@ COMMAND_HINTS: dict[str, tuple[str, str]] = {
     "/lazygit":   ("",                          "Open lazygit in a new terminal window"),
     "/clear":     ("",                          "Clear conversation history"),
     "/config":    ("[set KEY VAL]",             "Show/edit configuration"),
-    "/info":      ("",                          "Show model details from Ollama"),
+    "/info":      ("[prompt|tools]",             "Show model info, system prompt, or available tools"),
     "/pull":      ("[model|all]",                "Pull a model; 'all' pulls every local model"),
     "/update":    ("ollama|models",             "Update Ollama binary or pull all local models"),
-    "/tools":     ("",                              "List available tools"),
     "/todo":      ("[list|clear|add|done|remove]", "Manage task list"),
     "/help":      ("",                          "Show available commands"),
     "/quit":      ("",                          "Exit NanoHarness"),
@@ -361,6 +365,11 @@ def complete_line(workspace: Path, line: str) -> list[str]:
     if stripped.lower().startswith("/update "):
         partial = stripped[len("/update "):].lstrip().lower()
         return [f"/update {o}" for o in _UPDATE_SUBCMDS if o.startswith(partial)]
+
+    # /info <subcommand> — complete prompt|tools
+    if stripped.lower().startswith("/info "):
+        partial = stripped[len("/info "):].lstrip().lower()
+        return [f"/info {o}" for o in _INFO_SUBCMDS if o.startswith(partial)]
 
     # /config set <key> [value] — complete keys and enum values
     if stripped.lower().startswith("/config "):

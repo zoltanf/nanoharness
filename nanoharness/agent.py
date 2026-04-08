@@ -25,13 +25,17 @@ from . import logging as log
 _TOOL_SCHEMAS_CHARS: int = len(json.dumps(TOOL_SCHEMAS))
 
 
+_SAFETY_DESCRIPTIONS: dict[str, str] = {
+    "confirm":   "workspace-contained; bash/python/write require user approval",
+    "workspace": "workspace-contained, env scrubbed",
+    "none":      "no restrictions",
+}
+
 SYSTEM_PROMPT = (
     "You are a coding agent. Use tools to complete tasks. Be direct and concise.\n"
+    "Use python_exec for math and computations; use todo to track progress on multi-step tasks.\n"
     "Working directory: {workspace}\n"
-    "Safety: {safety} — "
-    "confirm: workspace-contained + user must approve bash/python/write; "
-    "workspace: workspace-contained, env scrubbed; "
-    "none: no restrictions."
+    "Safety: {safety} — {safety_description}"
 )
 
 FALLBACK_SYSTEM_PROMPT = (
@@ -104,7 +108,9 @@ class Agent:
         log.log_event("workspace_changed", str(ws))
 
     def _system_prompt(self) -> str:
-        return SYSTEM_PROMPT.format(workspace=self.config.workspace, safety=self.config.safety.level)
+        level = self.config.safety.level
+        desc = _SAFETY_DESCRIPTIONS.get(level, "")
+        return SYSTEM_PROMPT.format(workspace=self.config.workspace, safety=level, safety_description=desc)
 
     def _fallback_system_prompt(self) -> str:
         return FALLBACK_SYSTEM_PROMPT.format(workspace=self.config.workspace)
@@ -639,9 +645,22 @@ class Agent:
                 yield StreamEvent(type="done")
             return
 
-        if cmd == "/info":
-            async for ev in self._info_command():
-                yield ev
+        if cmd.startswith("/info"):
+            parts = stripped.split(maxsplit=1)
+            subcmd = parts[1].strip().lower() if len(parts) > 1 else ""
+            if subcmd == "prompt":
+                yield StreamEvent(type="content", text=self._system_prompt())
+                yield StreamEvent(type="done")
+            elif subcmd == "tools":
+                lines = ["Available tools:"]
+                for t in TOOL_SCHEMAS:
+                    fn = t["function"]
+                    lines.append(f"  {fn['name']:<14} {fn['description']}")
+                yield StreamEvent(type="content", text="\n".join(lines))
+                yield StreamEvent(type="done")
+            else:
+                async for ev in self._info_command():
+                    yield ev
             return
 
         # Handle slash commands and shell escape

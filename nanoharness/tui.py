@@ -155,7 +155,8 @@ class CompletingInput(TextArea):
         if (stripped.lower().startswith("/workspace ")
                 or stripped.lower().startswith("/think ")
                 or stripped.lower().startswith("/update ")
-                or stripped.lower().startswith("/config ")):
+                or stripped.lower().startswith("/config ")
+                or stripped.lower().startswith("/info ")):
             # Full-line replacements: no prefix needed.
             prefix = ""
         elif (not stripped.startswith("/")

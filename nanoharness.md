@@ -23,7 +23,7 @@ It acts as an autonomous loop that can interact with your local system to perfor
 | `/pull [model\|all]` | Pull a model; `all` updates every locally installed model |
 | `/update ollama` | Update the Ollama binary |
 | `/update models` | Alias for `/pull all` |
-| `/info` | Show model details, Ollama server version, and URL |
+| `/info [prompt\|tools]` | Show model details, current system prompt, or available tools |
 | `/clear` | Clear conversation history |
 | `/config [set KEY VAL]` | Show or edit configuration |
 | `/safety <level>` | Set safety level for this session |

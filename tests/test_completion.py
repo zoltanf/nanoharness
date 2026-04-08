@@ -346,10 +346,17 @@ class TestCompleteLine:
         matches = complete_line(workspace, "/pull ")
         assert matches == []
 
-    def test_trailing_space_unknown_command(self, workspace: Path):
-        """Any unknown-command line with trailing space returns nothing, not file list."""
-        matches = complete_line(workspace, "/info ")
+    def test_trailing_space_no_subcommand(self, workspace: Path):
+        """A command with no subcommands and a trailing space returns nothing."""
+        matches = complete_line(workspace, "/clear ")
         assert matches == []
+
+    def test_info_subcommand_completion(self, workspace: Path):
+        """/info <partial> completes to subcommands."""
+        assert complete_line(workspace, "/info ") == ["/info prompt", "/info tools"]
+        assert complete_line(workspace, "/info p") == ["/info prompt"]
+        assert complete_line(workspace, "/info t") == ["/info tools"]
+        assert complete_line(workspace, "/info x") == []
 
     # --- Embedded /think mid-message ---
 

@@ -60,7 +60,7 @@ uv run python -m nanoharness --repl
 | `/pull [model\|all]` | Pull a model; `all` updates every locally installed model |
 | `/update ollama` | Update the Ollama binary (detects brew vs manual install) |
 | `/update models` | Alias for `/pull all` |
-| `/info` | Show model details, Ollama server version, and URL |
+| `/info [prompt\|tools]` | Show model details, current system prompt, or available tools |
 | `/clear` | Clear conversation history |
 | `/config [set KEY VAL]` | Show or edit configuration |
 | `/safety <level>` | Set safety level for this session |

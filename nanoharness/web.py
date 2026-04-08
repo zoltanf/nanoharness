@@ -767,7 +767,7 @@ const COMMAND_HINTS = {
   '/lazygit':   ['',                          'Open lazygit in a new terminal window'],
   '/clear':     ['',                          'Clear conversation history'],
   '/config':    ['[set KEY VAL]',             'Show or edit configuration'],
-  '/info':      ['',                          'Show model details from Ollama'],
+  '/info':      ['[prompt|tools]',             'Show model info, system prompt, or available tools'],
   '/pull':      ['[model|all]',               "Pull a model; 'all' pulls every local model"],
   '/update':    ['ollama|models',             'Update Ollama binary or pull all local models'],
   '/todo':      ['[list|clear|add|done|remove]','Manage task list'],
@@ -779,6 +779,7 @@ const COMMAND_HINTS = {
 const THINK_OPTIONS = ['on', 'off', 'once'];
 const SAFETY_OPTIONS = ['confirm', 'workspace', 'none'];
 const UPDATE_OPTIONS = ['ollama', 'models'];
+const INFO_OPTIONS = ['prompt', 'tools'];
 
 function getHint(line) {
   const s = line.trimStart();
@@ -818,6 +819,10 @@ function getHint(line) {
     if (cmdPart === '/update' && argPart) {
       const opts = UPDATE_OPTIONS.filter(o => o.startsWith(argPart));
       return opts.length ? '/update ' + opts.join(' | ') : '';
+    }
+    if (cmdPart === '/info' && argPart) {
+      const opts = INFO_OPTIONS.filter(o => o.startsWith(argPart));
+      return opts.length ? '/info ' + opts.join(' | ') : '';
     }
     if (cmdPart === '/workspace' && argPart) return '';
     return desc ? cmdPart + ' ' + argH + '  ' + desc : cmdPart + ' ' + argH;
@@ -860,6 +865,11 @@ function getCompletions(line) {
   if (s.startsWith('/update ')) {
     const partial = s.slice(8).trimStart();
     return UPDATE_OPTIONS.filter(o => o.startsWith(partial)).map(o => '/update ' + o);
+  }
+  // /info <partial>
+  if (s.startsWith('/info ')) {
+    const partial = s.slice(6).trimStart();
+    return INFO_OPTIONS.filter(o => o.startsWith(partial)).map(o => '/info ' + o);
   }
   // bare /command prefix
   if (s.startsWith('/') && !s.includes(' ')) {
