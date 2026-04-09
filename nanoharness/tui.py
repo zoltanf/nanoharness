@@ -420,9 +420,9 @@ class ToolsModal(ModalScreen):
             yield Static(id="tools-content")
 
     def on_mount(self) -> None:
-        self._render()
+        self._update_display()
 
-    def _render(self) -> None:
+    def _update_display(self) -> None:
         lines: list[str] = [
             "[bold cyan]Tool Configuration[/]",
             "",
@@ -450,29 +450,31 @@ class ToolsModal(ModalScreen):
                 w_disp = w_str
                 name_disp = escape(name)
 
-            lines.append(f"  {g_disp}        {w_disp}           {name_disp}")
+            lines.append(f"  {g_disp}         {w_disp}             {name_disp}")
 
         lines += [
             "",
-            "[dim]↑↓ row  ←→ col  Space toggle  Esc save & close[/]",
+            f"  [green]✓[/] on   [red]✗[/] off   [dim]–[/] inherit global [dim](workspace only)[/]",
+            "",
+            "  [dim]↑↓ row  ←→ col  Space toggle  Esc save & close[/]",
         ]
         self.query_one("#tools-content", Static).update(Text.from_markup("\n".join(lines)))
 
     def action_move_up(self) -> None:
         self._row = (self._row - 1) % len(TOOL_NAMES)
-        self._render()
+        self._update_display()
 
     def action_move_down(self) -> None:
         self._row = (self._row + 1) % len(TOOL_NAMES)
-        self._render()
+        self._update_display()
 
     def action_move_left(self) -> None:
         self._col = 0
-        self._render()
+        self._update_display()
 
     def action_move_right(self) -> None:
         self._col = 1
-        self._render()
+        self._update_display()
 
     def action_toggle(self) -> None:
         name = TOOL_NAMES[self._row]
@@ -486,7 +488,7 @@ class ToolsModal(ModalScreen):
                 self._workspace[name] = False
             else:
                 self._workspace[name] = None
-        self._render()
+        self._update_display()
 
     def action_close(self) -> None:
         cfg = self._agent.config.tools

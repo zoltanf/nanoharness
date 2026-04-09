@@ -792,7 +792,7 @@ const COMMAND_HINTS = {
   '/lazygit':   ['',                          'Open lazygit in a new terminal window'],
   '/clear':     ['',                          'Clear conversation history'],
   '/config':    ['[tools | set KEY VAL]',      'Show/edit config or tool enables'],
-  '/info':      ['[prompt|tools]',             'Show model info, system prompt, or available tools'],
+  '/info':      ['[prompt|context|tools]',      'Show model info, system prompt/context, or available tools'],
   '/pull':      ['[model|all]',               "Pull a model; 'all' pulls every local model"],
   '/update':    ['ollama|models',             'Update Ollama binary or pull all local models'],
   '/todo':      ['[list|clear|add|done|remove]','Manage task list'],
@@ -804,7 +804,7 @@ const COMMAND_HINTS = {
 const THINK_OPTIONS = ['on', 'off', 'once'];
 const SAFETY_OPTIONS = ['confirm', 'workspace', 'none'];
 const UPDATE_OPTIONS = ['ollama', 'models'];
-const INFO_OPTIONS = ['prompt', 'tools'];
+const INFO_OPTIONS = ['prompt', 'context', 'tools'];
 const TOOL_NAMES = ['bash', 'read_file', 'write_file', 'list_files', 'python_exec', 'todo', 'fetch_webpage'];
 
 function getHint(line) {

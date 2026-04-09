@@ -37,7 +37,8 @@ Commands:
   /config tools               Show tool enable/disable state (TUI: opens interactive editor)
   /config tools TOOL [G] [W]  Set global (G) and/or workspace (W) enable for a tool
                               Values: on | off | _ (skip); workspace also accepts inherit
-  /info [prompt|tools]        Show model details, current system prompt, or available tools
+  /info [prompt|context|tools] Show model details, system prompt/context breakdown, or available tools
+                              prompt and context are aliases
   /pull [model|all]           Pull a model (defaults to current); 'all' pulls every local model
   /update ollama              Update Ollama to the latest version
   /update models              Pull all local models (alias for /pull all)

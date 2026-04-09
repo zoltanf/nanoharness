@@ -12,7 +12,7 @@ THINK_OPTIONS = ["on", "off", "once"]
 SAFETY_OPTIONS = ["workspace", "confirm", "none"]
 _THINK_VALID = ("on", "off", "once", "true", "false", "yes", "no")
 _UPDATE_SUBCMDS = ("ollama", "models")
-_INFO_SUBCMDS = ("prompt", "tools")
+_INFO_SUBCMDS = ("prompt", "context", "tools")
 
 
 def is_incomplete_command(line: str) -> bool:
@@ -100,7 +100,7 @@ def command_send_error(line: str) -> str:
         if cmd_part == "/update":
             return _arg_error(_UPDATE_SUBCMDS, "ollama | models")
         if cmd_part == "/info":
-            return _arg_error(_INFO_SUBCMDS, "prompt | tools")
+            return _arg_error(_INFO_SUBCMDS, "prompt | context | tools")
 
     return "Invalid command syntax."
 
@@ -112,7 +112,7 @@ COMMAND_HINTS: dict[str, tuple[str, str]] = {
     "/lazygit":   ("",                          "Open lazygit in a new terminal window"),
     "/clear":     ("",                          "Clear conversation history"),
     "/config":    ("[tools | set KEY VAL]",       "Show/edit config or tool enables"),
-    "/info":      ("[prompt|tools]",             "Show model info, system prompt, or available tools"),
+    "/info":      ("[prompt|context|tools]",      "Show model info, system prompt/context, or available tools"),
     "/pull":      ("[model|all]",                "Pull a model; 'all' pulls every local model"),
     "/update":    ("ollama|models",             "Update Ollama binary or pull all local models"),
     "/todo":      ("[list|clear|add|done|remove]", "Manage task list"),

@@ -662,8 +662,39 @@ class Agent:
         if cmd.startswith("/info"):
             parts = stripped.split(maxsplit=1)
             subcmd = parts[1].strip().lower() if len(parts) > 1 else ""
-            if subcmd == "prompt":
-                yield StreamEvent(type="content", text=self._system_prompt())
+            if subcmd in ("prompt", "context"):
+                from rich.markup import escape as mesc
+                sys_prompt = self._system_prompt()
+                active = self.tools.enabled_schemas(self.config.tools)
+                sys_toks   = len(sys_prompt) // 4
+                tools_toks = len(json.dumps(active)) // 4
+                hist_chars = self._last_build_chars - len(sys_prompt)
+                hist_toks  = max(0, hist_chars) // 4
+                total_toks = sys_toks + tools_toks + hist_toks
+
+                level = self.config.safety.level
+                desc  = _SAFETY_DESCRIPTIONS.get(level, "")
+                ws    = str(self.config.workspace)
+                sep   = "─" * 52
+                col   = 16
+
+                lines = [
+                    "[bold cyan]System Prompt[/]",
+                    f"[dim]{sep}[/]",
+                    "You are a coding agent. Use tools to complete tasks. Be direct and concise.",
+                    "Use python_exec for math and computations; use todo to track progress on multi-step tasks.",
+                    f"[dim]Working directory:[/] [cyan]{mesc(ws)}[/]",
+                    f"[dim]Safety:[/] [yellow]{mesc(level)}[/][dim] — {mesc(desc)}[/]",
+                    "",
+                    f"[bold cyan]Token Breakdown[/]",
+                    f"[dim]{sep}[/]",
+                    f"[dim]{'System prompt':<{col}}[/]  ≈ [bold]{sys_toks:>5,}[/] tokens",
+                    f"[dim]{'Tools schema':<{col}}[/]  ≈ [bold]{tools_toks:>5,}[/] tokens  [dim]({len(active)} active / {len(TOOL_SCHEMAS)} total)[/]",
+                    f"[dim]{'History':<{col}}[/]  ≈ [bold]{hist_toks:>5,}[/] tokens  [dim]({len(self.history)} messages)[/]",
+                    f"[dim]{sep}[/]",
+                    f"[dim]{'Total':<{col}}[/]  ≈ [bold]{total_toks:>5,}[/] tokens",
+                ]
+                yield StreamEvent(type="markup", text="\n".join(lines))
                 yield StreamEvent(type="done")
             elif subcmd == "tools":
                 from rich.markup import escape as mesc
@@ -688,6 +719,8 @@ class Agent:
                         if opt_parts:
                             param_str += ("  " if req_parts else "") + f"[{', '.join(opt_parts)}]"
                         lines.append(f"{'':>{name_w + 2}}[dim italic]{mesc(param_str)}[/]")
+                lines.append(f"[dim]{sep}[/]")
+                lines.append("[dim]Use /config tools to enable or disable tools.[/]")
                 yield StreamEvent(type="markup", text="\n".join(lines))
                 yield StreamEvent(type="done")
             else:
