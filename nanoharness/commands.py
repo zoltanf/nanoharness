@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .config import CONFIG_KEYS, TOOL_NAMES
+from .config import CONFIG_KEYS, THEME_OPTIONS, TOOL_NAMES
 
 if TYPE_CHECKING:
     from .config import Config
@@ -22,6 +22,7 @@ class CommandResult:
     shell_command: str | None = None
     workspace_changed: bool = False
     refresh_status: bool = False
+    theme_changed: bool = False
 
 
 HELP_TEXT = """
@@ -153,10 +154,14 @@ class CommandHandler:
                 if first == "tools":
                     return self._config_tools_command(arg_parts[1:])
 
+                if first == "theme":
+                    return self._config_theme_command(arg_parts[1:])
+
                 if first != "set" or len(arg_parts) < 3:
                     return CommandResult(
                         output="Usage: /config set <key> <value>\n"
                                "       /config tools [<tool> [global] [workspace]]\n"
+                               "       /config theme light|dark|auto\n"
                                "Type /config to see all keys and current values."
                     )
 
@@ -286,10 +291,12 @@ class CommandHandler:
             f"  agent.max_output_chars= {self.config.agent.max_output_chars}",
             f"  safety.level          = {self.config.safety.level}  (use /safety to change for this session)",
             f"  ollama.base_url       = {self.config.ollama.base_url}",
+            f"  ui.theme              = {self.config.ui.theme}  (use /config theme to change)",
             f"  workspace             = {self.config.workspace}  (use /workspace to change)",
             "",
             "Usage: /config set <key> <value>",
             "       /config tools [<tool> [global] [workspace]]",
+            "       /config theme light|dark|auto",
             "Restart NanoHarness for changes to take effect.",
         ]
         return "\n".join(lines)
@@ -352,6 +359,25 @@ class CommandHandler:
         lines.append("             Values: on | off | _ (skip); workspace also accepts inherit")
         return "\n".join(lines)
 
+    def _config_theme_command(self, rest: list[str]) -> CommandResult:
+        """Handle /config theme [light|dark|auto]."""
+        if not rest:
+            return CommandResult(
+                output=f"Theme: {self.config.ui.theme}  (options: light | dark | auto)"
+            )
+        value = rest[0].lower()
+        if value not in THEME_OPTIONS:
+            return CommandResult(
+                output=f"Invalid theme '{value}'. Use: light | dark | auto"
+            )
+        self.config.ui.theme = value
+        from .config import write_config_toml, CONFIG_FILE
+        write_config_toml(self.config)
+        return CommandResult(
+            output=f"Theme set to '{value}' (saved to {CONFIG_FILE})",
+            theme_changed=True,
+        )
+
     @staticmethod
     def _parse_int(value: str) -> int:
         """Parse integer with optional k/K suffix (e.g. '128k' → 131072)."""
@@ -397,6 +423,10 @@ class CommandHandler:
                 self.config.safety.level = value
             case "ollama.base_url":
                 self.config.ollama.base_url = value
+            case "ui.theme":
+                if value not in THEME_OPTIONS:
+                    return f"Invalid value '{value}'. Use: light / dark / auto"
+                self.config.ui.theme = value
             case _:
                 return f"Unknown key '{key}'. Type /config to see all keys."
         return None

@@ -20,7 +20,10 @@ CONFIG_KEYS = [
     "agent.max_output_chars",
     "safety.level",
     "ollama.base_url",
+    "ui.theme",
 ]
+
+THEME_OPTIONS = ["light", "dark", "auto"]
 
 TOOL_NAMES = ["bash", "read_file", "write_file", "list_files", "python_exec", "todo", "fetch_webpage"]
 
@@ -77,6 +80,11 @@ class ToolsConfig:
 
 
 @dataclass
+class UIConfig:
+    theme: str = "auto"  # "light" | "dark" | "auto"
+
+
+@dataclass
 class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
@@ -84,6 +92,7 @@ class Config:
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     web: WebConfig = field(default_factory=WebConfig)
     tools: ToolsConfig = field(default_factory=ToolsConfig)
+    ui: UIConfig = field(default_factory=UIConfig)
     workspace: Path = field(default_factory=Path.cwd)
     debug: bool = False
 
@@ -130,6 +139,10 @@ def _apply_toml(cfg: Config, data: dict) -> None:
     for name in TOOL_NAMES:
         if name in t:
             setattr(cfg.tools, name, bool(t[name]))
+
+    u = data.get("ui", {})
+    if "theme" in u:
+        cfg.ui.theme = u["theme"]
 
 
 def _apply_env(cfg: Config) -> None:
@@ -220,6 +233,9 @@ def write_config_toml(cfg: Config, path: Path = CONFIG_FILE) -> None:
         "",
         "[tools]",
         *[f"{name} = {str(getattr(cfg.tools, name)).lower()}" for name in TOOL_NAMES],
+        "",
+        "[ui]",
+        f'theme = "{cfg.ui.theme}"',
         "",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -14,10 +14,9 @@ from textual.events import Key
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.message import Message
-from textual.widgets import Static, TextArea
+from textual.widgets import Static, TextArea, Markdown as MarkdownWidget
 from rich.text import Text
 from rich.markup import escape
-from rich.markdown import Markdown
 
 from .completion import complete_line, hint_for_input, is_incomplete_command, command_send_error
 from .tools import format_confirm_preview, _count_lines
@@ -510,6 +509,9 @@ class NanoHarnessApp(App):
         width: 100%;
         height: auto;
     }
+    Markdown.chat-msg {
+        padding: 0;
+    }
     SpinnerLine {
         height: 1;
         padding: 0 1;
@@ -525,6 +527,9 @@ class NanoHarnessApp(App):
         height: 1;
         padding: 0 1;
         color: $text-muted;
+        background: #f0f4f8;
+    }
+    App.-dark-mode HintLine {
         background: #0d2137;
     }
     CompletingInput {
@@ -533,15 +538,25 @@ class NanoHarnessApp(App):
         max-height: 8;
         border: none;
         padding: 1 1;
+        background: #f0f4f8;
+        color: $text;
+    }
+    App.-dark-mode CompletingInput {
         background: #0d2137;
         color: white;
     }
     CompletingInput > .text-area--cursor-line {
+        background: #f0f4f8;
+    }
+    App.-dark-mode CompletingInput > .text-area--cursor-line {
         background: #0d2137;
     }
     #bottom-panel {
         dock: bottom;
         height: auto;
+        background: #f0f4f8;
+    }
+    App.-dark-mode #bottom-panel {
         background: #0d2137;
     }
     """
@@ -594,6 +609,8 @@ class NanoHarnessApp(App):
             ))
 
     async def on_mount(self) -> None:
+        if self.agent.config.ui.theme == "light":
+            self.theme = "textual-light"
         ollama_version = await self.agent.client.get_version()
         self._show_welcome(ollama_version)
         self.query_one(SpinnerLine).display = False
@@ -655,20 +672,20 @@ class NanoHarnessApp(App):
         thinking_buffer = ""
         content_buffer = ""
         thinking_widget: Static | None = None
-        streaming_widget: Static | None = None
+        streaming_widget: MarkdownWidget | None = None
         progress_widget: Static | None = None
         got_first_output = False
+        last_md_len = 0
+        chat_log = self.query_one("#chat-log", VerticalScroll)
 
-        def _finalize_widgets() -> None:
-            nonlocal thinking_buffer, content_buffer, thinking_widget, streaming_widget, progress_widget
+        async def _finalize_widgets() -> None:
+            nonlocal thinking_buffer, content_buffer, thinking_widget, streaming_widget, progress_widget, last_md_len
+            if streaming_widget is not None and content_buffer:
+                await streaming_widget.update(content_buffer)
             progress_widget = None  # reset reference; last line remains visible in chat
-            if content_buffer and streaming_widget:
-                try:
-                    streaming_widget.update(Markdown(content_buffer))
-                except Exception:
-                    pass
-                content_buffer = ""
-                streaming_widget = None
+            content_buffer = ""
+            streaming_widget = None
+            last_md_len = 0
             if thinking_buffer and not thinking_widget:
                 self._append_chat(Text(thinking_buffer.strip(), style="dim italic"))
             thinking_buffer = ""
@@ -684,10 +701,13 @@ class NanoHarnessApp(App):
                             status_bar.set_net("↓")
                         content_buffer += ev.text
                         if streaming_widget is None:
-                            streaming_widget = self._append_chat(content_buffer)
-                        else:
-                            streaming_widget.update(content_buffer)
-                            streaming_widget.scroll_visible()
+                            streaming_widget = MarkdownWidget(content_buffer, classes="chat-msg")
+                            await chat_log.mount(streaming_widget)
+                            last_md_len = len(content_buffer)
+                        elif len(content_buffer) - last_md_len >= 80:
+                            await streaming_widget.update(content_buffer)
+                            last_md_len = len(content_buffer)
+                        streaming_widget.scroll_visible()
 
                     case "thinking":
                         if not got_first_output:
@@ -723,7 +743,7 @@ class NanoHarnessApp(App):
                             got_first_output = True
                         spinner.stop()
                         status_bar.set_net("")
-                        _finalize_widgets()
+                        await _finalize_widgets()
                         args_str = ", ".join(
                             f"{k}={repr(v)[:80]}" for k, v in ev.tool_args.items()
                         )
@@ -757,13 +777,17 @@ class NanoHarnessApp(App):
 
                     case "markup":
                         spinner.stop()
-                        _finalize_widgets()
+                        await _finalize_widgets()
                         self._append_chat(ev.text, markup=True)
 
+                    case "theme":
+                        new_theme = "textual-light" if self.agent.config.ui.theme == "light" else "textual-dark"
+                        if self.theme != new_theme:
+                            self.theme = new_theme
+
                     case "status":
-                        _finalize_widgets()
+                        await _finalize_widgets()
                         if ev.text == "Conversation cleared.":
-                            chat_log = self.query_one("#chat-log", VerticalScroll)
                             chat_log.remove_children()
                             self._show_welcome()
                         else:
@@ -772,12 +796,12 @@ class NanoHarnessApp(App):
 
                     case "error":
                         spinner.stop()
-                        _finalize_widgets()
+                        await _finalize_widgets()
                         self._append_chat(Text.from_markup(f"[bold red]{escape(ev.text)}[/]"))
 
                     case "done":
                         spinner.stop()
-                        _finalize_widgets()
+                        await _finalize_widgets()
                         if ev.text == "quit":
                             self.exit()
                             return
@@ -786,7 +810,7 @@ class NanoHarnessApp(App):
 
         except asyncio.CancelledError:
             spinner.stop()
-            _finalize_widgets()
+            await _finalize_widgets()
             self._append_chat(Text.from_markup("[dim]Interrupted.[/]"))
 
         except Exception as e:
@@ -796,7 +820,7 @@ class NanoHarnessApp(App):
 
         finally:
             spinner.stop()
-            _finalize_widgets()
+            await _finalize_widgets()
             self._processing = False
             self._agent_worker = None
             inp.read_only = False

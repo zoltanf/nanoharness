@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import CONFIG_KEYS, TOOL_NAMES  # noqa: F401 — re-exported for callers
+from .config import CONFIG_KEYS, THEME_OPTIONS, TOOL_NAMES  # noqa: F401 — re-exported for callers
 
 COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/pull", "/update", "/todo", "/help", "/quit", "/exit", "/safety"]
 
@@ -198,7 +198,7 @@ def hint_for_input(line: str) -> str:
             sub_parts = arg_part.split()
             first_sub = sub_parts[0] if sub_parts else ""
             # /config tools ...
-            if "tools".startswith(first_sub) and first_sub not in ("set",):
+            if "tools".startswith(first_sub) and first_sub not in ("set", "theme"):
                 if len(sub_parts) <= 1:
                     return "/config tools [<tool> [global] [workspace]]  Configure tool access"
                 if len(sub_parts) == 2:
@@ -206,9 +206,13 @@ def hint_for_input(line: str) -> str:
                 if len(sub_parts) == 3:
                     return f"/config tools <tool> {sub_parts[2]} on|off|inherit|_  (workspace)"
                 return ""
+            if "theme".startswith(first_sub) and first_sub not in ("set", "tools"):
+                if len(sub_parts) <= 1:
+                    return "/config theme light|dark|auto  Set UI color theme"
+                return ""
             # /config set ...
             if not sub_parts or not "set".startswith(first_sub):
-                return "/config tools | set <key> <value>  Show/edit config or tool enables"
+                return "/config tools | theme | set <key> <value>  Show/edit config or tool enables"
             if len(sub_parts) == 1 and sub_parts[0] == "set":
                 return f"/config set {' | '.join(CONFIG_KEYS)}"
             if len(sub_parts) == 2:
@@ -375,16 +379,13 @@ def complete_line(workspace: Path, line: str) -> list[str]:
         rest_parts = rest.split(maxsplit=3)
         first = rest_parts[0].lower() if rest_parts else ""
 
+        def _config_subcmds(prefix: str) -> list[str]:
+            return [f"/config {s}" for s in ("set", "theme", "tools") if s.startswith(prefix)]
+
         # /config tools [<tool> [global] [workspace]]
-        if "tools".startswith(first) and first not in ("set",):
+        if "tools".startswith(first) and first not in ("set", "theme"):
             if first != "tools" or (len(rest_parts) == 1 and not trailing):
-                # Still typing "tools" prefix — offer set/tools candidates
-                candidates = []
-                if "set".startswith(first):
-                    candidates.append("/config set")
-                if "tools".startswith(first):
-                    candidates.append("/config tools")
-                return candidates
+                return _config_subcmds(first)
             # first == "tools"; user has typed a space → complete next token
             if len(rest_parts) == 1:
                 return [f"/config tools {n}" for n in TOOL_NAMES]
@@ -404,9 +405,18 @@ def complete_line(workspace: Path, line: str) -> list[str]:
             w_partial = rest_parts[3].lower()
             return [f"/config tools {tool} {g_val} {v}" for v in ("on", "off", "inherit") if v.startswith(w_partial)]
 
+        # /config theme [value]
+        if "theme".startswith(first) and first not in ("set", "tools"):
+            if first != "theme" or (len(rest_parts) == 1 and not trailing):
+                return _config_subcmds(first)
+            if len(rest_parts) == 1:
+                return [f"/config theme {v}" for v in THEME_OPTIONS]
+            partial = rest_parts[1].lower()
+            return [f"/config theme {v}" for v in THEME_OPTIONS if v.startswith(partial)]
+
         # /config set <key> [value]
         if not rest_parts or not "set".startswith(first):
-            return ["/config set", "/config tools"]
+            return _config_subcmds("")
         if len(rest_parts) == 1 and not trailing:
             return ["/config set"]
         if len(rest_parts) == 1:

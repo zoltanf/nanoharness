@@ -353,7 +353,7 @@ class TestCompleteLine:
 
     def test_info_subcommand_completion(self, workspace: Path):
         """/info <partial> completes to subcommands."""
-        assert complete_line(workspace, "/info ") == ["/info prompt", "/info tools"]
+        assert complete_line(workspace, "/info ") == ["/info prompt", "/info context", "/info tools"]
         assert complete_line(workspace, "/info p") == ["/info prompt"]
         assert complete_line(workspace, "/info t") == ["/info tools"]
         assert complete_line(workspace, "/info x") == []
@@ -514,3 +514,47 @@ class TestConfigToolsCompletion:
         completions = complete_line(workspace, "/config set ")
         from nanoharness.completion import CONFIG_KEYS
         assert any("model.name" in c for c in completions)
+
+    def test_config_space_also_suggests_theme(self, workspace: Path):
+        completions = complete_line(workspace, "/config ")
+        assert any("theme" in c for c in completions)
+
+
+class TestConfigThemeHints:
+    def test_config_theme_hint(self):
+        hint = hint_for_input("/config theme")
+        assert "light" in hint
+        assert "dark" in hint
+        assert "auto" in hint
+
+    def test_config_theme_with_space(self):
+        hint = hint_for_input("/config theme ")
+        assert "light" in hint
+        assert "dark" in hint
+        assert "auto" in hint
+
+    def test_config_t_shows_theme(self):
+        hint = hint_for_input("/config t")
+        assert "theme" in hint or "tools" in hint  # t prefix matches both
+
+
+class TestConfigThemeCompletion:
+    def test_config_theme_values(self, workspace: Path):
+        completions = complete_line(workspace, "/config theme ")
+        assert "/config theme light" in completions
+        assert "/config theme dark" in completions
+        assert "/config theme auto" in completions
+
+    def test_config_theme_partial(self, workspace: Path):
+        completions = complete_line(workspace, "/config theme l")
+        assert "/config theme light" in completions
+        assert "/config theme dark" not in completions
+
+    def test_config_theme_partial_d(self, workspace: Path):
+        completions = complete_line(workspace, "/config theme d")
+        assert "/config theme dark" in completions
+        assert "/config theme light" not in completions
+
+    def test_config_theme_partial_a(self, workspace: Path):
+        completions = complete_line(workspace, "/config theme a")
+        assert "/config theme auto" in completions

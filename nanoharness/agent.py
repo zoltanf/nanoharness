@@ -755,6 +755,8 @@ class Agent:
 
             if result.clear_history:
                 self.clear_history()
+            if result.theme_changed:
+                yield StreamEvent(type="theme", text=self.config.ui.theme)
             yield StreamEvent(type="status", text=result.output)
             yield StreamEvent(type="done", text="quit" if result.should_quit else "")
             return

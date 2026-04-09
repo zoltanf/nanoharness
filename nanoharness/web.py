@@ -14,7 +14,7 @@ from typing import AsyncIterator, TYPE_CHECKING
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-from . import logging as log, BANNER as _BANNER
+from . import logging as log, BANNER as _BANNER, __version__
 from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON
 from .tools import format_confirm_preview
 
@@ -31,6 +31,7 @@ def create_app(
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        app.state.ollama_version = await agent.client.get_version()
         if open_browser:
             webbrowser.open(f"http://{host}:{port}")
         yield
@@ -60,13 +61,21 @@ def create_app(
         .replace("__WS_PORT__", str(port))
         .replace("__WORKSPACE__", _html.escape(str(cfg.workspace)))
         .replace("__BANNER__", json.dumps(_BANNER))
+        .replace("__VERSION__", json.dumps(__version__))
+        .replace("__OLLAMA_URL__", json.dumps(str(cfg.ollama.base_url)))
         .replace("__SAFETY_WARNING_JSON__", json.dumps(WARN_SAFETY_NONE if cfg.safety.level == "none" else ""))
         .replace("__DEBUG_WARNING_JSON__", json.dumps(WARN_DEBUG_ON if cfg.debug else ""))
     )
 
+    _html_by_theme = {
+        "auto":  cached_html.replace("__THEME_ATTR__", ""),
+        "light": cached_html.replace("__THEME_ATTR__", 'data-theme="light"'),
+        "dark":  cached_html.replace("__THEME_ATTR__", 'data-theme="dark"'),
+    }
+
     @app.get("/", response_class=HTMLResponse)
     async def index():
-        return cached_html
+        return _html_by_theme.get(agent.config.ui.theme, _html_by_theme["auto"])
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
@@ -100,6 +109,20 @@ def create_app(
 
         agent.tools.confirm_fn = web_confirm
 
+        _agent_task: asyncio.Task | None = None
+
+        async def _run_agent(text: str) -> None:
+            app.state.processing = True
+            log.log_event("ws_input", text)
+            try:
+                async for ev in agent.process_input(text):
+                    await websocket.send_json(ev.to_dict())
+            except Exception as e:
+                log.log_error("ws_process", e)
+                await websocket.send_json({"type": "error", "text": f"{type(e).__name__}: {e}"})
+            finally:
+                app.state.processing = False
+
         try:
             while True:
                 raw = await websocket.receive_text()
@@ -126,24 +149,17 @@ def create_app(
                     await websocket.send_json({"type": "error", "text": "Still processing..."})
                     continue
 
-                app.state.processing = True
-                log.log_event("ws_input", text)
-                try:
-                    async for ev in agent.process_input(text):
-                        await websocket.send_json(ev.to_dict())
-                except Exception as e:
-                    log.log_error("ws_process", e)
-                    await websocket.send_json({"type": "error", "text": f"{type(e).__name__}: {e}"})
-                finally:
-                    app.state.processing = False
+                _agent_task = asyncio.create_task(_run_agent(text))
+
         except WebSocketDisconnect:
             log.log_event("ws_disconnect", "client disconnected")
-            # Auto-deny all future confirms so in-flight agent tasks don't execute
-            # unconfirmed tools for the remainder of the turn.
+            if _agent_task and not _agent_task.done():
+                _agent_task.cancel()
+            # Auto-deny all future confirms so in-flight tools don't execute
             async def _auto_deny(tool_name: str, args: dict) -> bool:
                 return False
             agent.tools.confirm_fn = _auto_deny
-            # Reject any pending confirms so agent tasks don't hang
+            # Resolve any pending confirms so the agent task doesn't hang
             for fut in _pending_confirms.values():
                 if not fut.done():
                     fut.set_result(False)
@@ -190,6 +206,23 @@ def create_app(
         asyncio.get_event_loop().call_later(0.2, os.kill, os.getpid(), signal.SIGTERM)
         return {"ok": True}
 
+    @app.get("/api/version")
+    async def version_info():
+        """Return Ollama version for the welcome banner (fetched once at startup)."""
+        return {"version": app.state.ollama_version, "url": str(cfg.ollama.base_url)}
+
+    @app.get("/api/status")
+    async def status_info():
+        """Return dynamic status bar data: context tokens and todo stats."""
+        ag = app.state.agent
+        next_task, progress = ag.tools.get_todo_parts()
+        return {
+            "ctx_used": ag.last_prompt_tokens,
+            "ctx_max": ag.context_size,
+            "next_task": next_task,
+            "progress": progress,
+        }
+
     return app
 
 
@@ -213,13 +246,11 @@ async def run_web(
 # ---------------------------------------------------------------------------
 
 HTML_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="en">
+<html lang="en" __THEME_ATTR__>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>NanoHarness</title>
-<script src="https://cdn.jsdelivr.net/npm/marked@18.0.0/marked.min.js" integrity="sha384-tkjnnf9Tzhv5ZFrDroGvUExw9C3EVFo0RFRkzKR8ZX4b5Psoec4yb1PlD8Jh4j4H" crossorigin="anonymous"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.3.3/dist/purify.min.js" integrity="sha384-pcBjnGbkyKeOXaoFkmJiuR9E08/6gkmus6/Strimnxtl3uk0Hx23v345pWyC/MMr" crossorigin="anonymous"></script>
 <style>
   :root {
     --bg: #0d1117; --bg2: #161b22; --bg3: #1c2129;
@@ -251,18 +282,31 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; height: 100vh; display: flex; flex-direction: column; }
 
-  /* Status bar */
-  #status { background: var(--bg2); border-top: 1px solid var(--border); padding: 6px 16px; font-size: 13px; flex-shrink: 0; display: flex; gap: 12px; align-items: center; }
-  #status .model { color: var(--accent); font-weight: 600; }
-  #status .dim { color: var(--fg-dim); }
+  /* Chat area — centered column matching bottom panel width */
+  #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  #chat > * { width: 100%; max-width: 860px; }
 
-  /* Chat area */
-  #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  /* Bottom panel — centered rounded card containing hint + input + status */
+  #bottom-panel { max-width: 860px; width: calc(100% - 32px); margin: 0 auto 16px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; flex-shrink: 0; background: var(--bg); }
+
+  /* Status bar — flex row of column cells with right-border separators */
+  #status { display: flex; align-items: stretch; font-size: 11px; border-top: 1px solid var(--border); background: var(--bg2); }
+  .s-col { display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; border-right: 1px solid var(--border); justify-content: center; }
+  .s-col:last-child { border-right: none; }
+  .s-col-fill { flex: 1; min-width: 0; }
+  .s-col-right { text-align: right; }
+  .s-fill { display: flex; gap: 12px; }
+  #status .model { color: var(--accent); font-weight: 600; }
+  .s-val { color: var(--fg); font-weight: 600; }
+  .s-lbl { color: var(--fg-dim); font-size: 10px; }
+  .think-on { color: var(--green); }
+  .think-once { color: var(--yellow); }
+  .think-off { color: var(--fg-dim); }
+  .ctx-warn { color: var(--red); font-weight: 600; }
 
   /* Messages */
-  .msg { max-width: 100%; }
-  .msg-user { align-self: flex-end; margin-top: 12px; }
-  .msg-user .bubble { background: var(--bubble); border: 1px solid var(--bubble-border); border-radius: var(--radius); padding: 8px 14px; }
+  .msg-user { display: flex; flex-direction: column; align-items: flex-end; margin-top: 12px; }
+  .msg-user .bubble { max-width: 66%; background: var(--bubble); border: 1px solid var(--bubble-border); border-radius: var(--radius); padding: 8px 14px; }
   .msg-user .label { color: var(--cyan); font-size: 12px; font-weight: 600; margin-bottom: 4px; }
 
   .msg-assistant { padding: 4px 8px; }
@@ -274,8 +318,11 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .msg-assistant .content h1, .msg-assistant .content h2, .msg-assistant .content h3 { color: var(--accent); margin: 0.6em 0 0.3em; }
   .msg-assistant .content ul, .msg-assistant .content ol { padding-left: 1.5em; }
   .msg-assistant .content a { color: var(--accent); }
-  .msg-assistant .content table { border-collapse: collapse; margin: 0.6em 0; }
-  .msg-assistant .content th, .msg-assistant .content td { border: 1px solid var(--border); padding: 4px 8px; }
+  .msg-assistant .content table { border-collapse: separate; border-spacing: 0; margin: 0.6em 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .msg-assistant .content th, .msg-assistant .content td { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 6px 12px; }
+  .msg-assistant .content th:last-child, .msg-assistant .content td:last-child { border-right: none; }
+  .msg-assistant .content tr:last-child td { border-bottom: none; }
+  .msg-assistant .content th { background: var(--bg3); font-weight: 600; color: var(--fg); }
   .msg-assistant .content blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--fg-dim); }
 
   /* Tool call/result */
@@ -310,17 +357,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .spinner-dot:nth-child(2) { animation-delay: .15s; }
   .spinner-dot:nth-child(3) { animation-delay: .3s; }
 
-  /* Hint line */
-  #hint-line { background: var(--bg2); padding: 2px 16px; font-size: 13px; color: var(--fg-dim); font-family: var(--mono); min-height: 0; overflow: hidden; transition: max-height 0.1s, padding 0.1s; }
-  #hint-line.visible { max-height: 24px; padding: 4px 16px; }
+  /* Hint line — border only when visible so it doesn't bleed through as a phantom line when collapsed */
+  #hint-line { padding: 0 16px; font-size: 13px; color: var(--fg-dim); font-family: var(--mono); overflow: hidden; transition: max-height 0.1s, padding 0.1s; }
+  #hint-line.visible { max-height: 24px; padding: 4px 16px; border-bottom: 1px solid var(--border); }
   #hint-line.hidden { max-height: 0; padding: 0 16px; }
 
-  /* Input area */
-  #input-area { background: var(--bg2); border-top: 1px solid var(--border); padding: 12px 16px; flex-shrink: 0; display: flex; gap: 8px; }
-  #input-area textarea { flex: 1; background: var(--bg3); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; font-family: var(--font); font-size: 14px; outline: none; resize: none; min-height: 42px; max-height: 200px; overflow-y: hidden; line-height: 1.5; }
-  #input-area textarea:focus { border-color: var(--accent); }
+  /* Input area — left padding 0 so textarea text aligns with status bar column text at 14px */
+  #input-area { padding: 6px 12px 6px 0; display: flex; align-items: center; gap: 8px; }
+  #input-area textarea { flex: 1; background: transparent; color: var(--fg); border: none; padding: 6px 14px; font-family: var(--font); font-size: 14px; outline: none; resize: none; min-height: 32px; max-height: 200px; overflow-y: hidden; line-height: 1.5; }
   #input-area textarea::placeholder { color: var(--fg-dim); }
-  #input-area button { background: var(--accent); color: var(--btn-fg); border: none; border-radius: var(--radius); padding: 8px 14px; font-weight: 700; cursor: pointer; font-size: 18px; line-height: 1; flex-shrink: 0; align-self: flex-end; margin-bottom: 3px; }
+  #input-area button { background: var(--accent); color: var(--btn-fg); border: none; border-radius: var(--radius); padding: 6px 12px; font-weight: 700; cursor: pointer; font-size: 18px; line-height: 1; flex-shrink: 0; }
   #input-area button:hover { opacity: .9; }
   #input-area button:disabled { opacity: .4; cursor: default; }
 </style>
@@ -329,27 +375,71 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <div id="chat"></div>
 
-<div id="hint-line" class="hidden"></div>
-<div id="input-area">
-  <textarea id="input" rows="1" placeholder="Type a message or /help… Enter to send, Shift+Enter / Alt+Enter / Ctrl+J for newline" autocomplete="off" autofocus></textarea>
-  <button id="send" onclick="sendMessage()" aria-label="Send">&#x2191;</button>
+<div id="bottom-panel">
+  <div id="hint-line" class="hidden"></div>
+  <div id="input-area">
+    <textarea id="input" rows="1" placeholder="Tell me about this project" autocomplete="off" autofocus></textarea>
+    <button id="send" onclick="sendMessage()" aria-label="Send">&#x2191;</button>
+  </div>
+  <div id="status">
+    <div class="s-col">
+      <span class="s-val model">__MODEL_NAME__</span>
+      <span class="s-lbl">model</span>
+    </div>
+    <div class="s-col">
+      <span class="s-val" id="status-ctx">– / –</span>
+      <span class="s-lbl">context</span>
+    </div>
+    <div class="s-col">
+      <span class="s-val think-__THINKING__" id="status-thinking">__THINKING__</span>
+      <span class="s-lbl">think</span>
+    </div>
+    <div class="s-col s-col-fill">
+      <div class="s-fill">
+        <span id="status-workspace">__WORKSPACE__</span>
+        <span id="status-todo-val" style="display:none"></span>
+      </div>
+      <div class="s-fill">
+        <span id="status-safety" class="s-lbl">safety:__SAFETY__</span>
+        <span id="status-todo-lbl" style="display:none"></span>
+      </div>
+    </div>
+  </div>
 </div>
-
-<div id="status">
-  <span class="model">__MODEL_NAME__</span>
-  <span class="dim" id="status-thinking">think:__THINKING__</span>
-  <span class="dim" id="status-safety">safety:__SAFETY__</span>
-  <span class="dim" id="status-workspace">__WORKSPACE__</span>
-  <span class="dim" id="status-ws">connecting...</span>
-  <span class="dim" id="theme-toggle" style="cursor:pointer;margin-left:auto;" onclick="toggleTheme()">theme:auto</span>
-</div>
+<span id="status-ws" style="display:none">connecting...</span>
 
 <script>
 const chat = document.getElementById('chat');
 const input = document.getElementById('input');
 const sendBtn = document.getElementById('send');
-const statusWs = document.getElementById('status-ws');
 const statusThinking = document.getElementById('status-thinking');
+const statusCtx = document.getElementById('status-ctx');
+
+function fmtCtx(n) { return n >= 1000 ? Math.floor(n / 1000) + 'k' : String(n); }
+
+async function updateStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    if (statusCtx) {
+      const usedStr = d.ctx_used > 0 ? fmtCtx(d.ctx_used) : '–';
+      const maxStr = d.ctx_max > 0 ? fmtCtx(d.ctx_max) : '?';
+      statusCtx.textContent = usedStr + ' / ' + maxStr;
+      statusCtx.className = (d.ctx_max > 0 && d.ctx_used / d.ctx_max > 0.70) ? 'ctx-warn' : '';
+    }
+    const valEl = document.getElementById('status-todo-val');
+    const lblEl = document.getElementById('status-todo-lbl');
+    if (d.progress) {
+      if (valEl && d.next_task) { valEl.textContent = 'Next: ' + d.next_task; valEl.style.display = ''; }
+      else if (valEl) valEl.style.display = 'none';
+      if (lblEl) { lblEl.textContent = d.progress; lblEl.style.display = ''; }
+    } else {
+      if (valEl) { valEl.textContent = ''; valEl.style.display = 'none'; }
+      if (lblEl) { lblEl.textContent = ''; lblEl.style.display = 'none'; }
+    }
+  } catch(e) {}
+}
+updateStatus();
 
 let ws;
 let processing = false;
@@ -361,24 +451,106 @@ let thinkingBuf = '';
 let currentAssistantEl = null;
 let currentContentEl = null;
 let currentThinkingEl = null;
+let renderPending = false;
 let progressEl = null;
 let history = [];
 let historyIdx = -1;
 
-// Markdown renderer
-function renderMd(text) {
-  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-    const html = marked.parse(text, { breaks: true });
-    return DOMPurify.sanitize(html);
+// ── Inline Markdown renderer (no external deps) ──────────────────────────────
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function inlineMd(text) {
+  // Extract inline code first to protect its content
+  const codes = [];
+  text = text.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return '\x00' + (codes.length - 1) + '\x00'; });
+  text = escHtml(text);
+  text = text
+    .replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  return text.replace(/\x00(\d+)\x00/g, (_, i) => '<code>' + escHtml(codes[+i]) + '</code>');
+}
+
+function renderMd(src) {
+  const out = [];
+  const lines = src.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    // Fenced code block
+    const fence = line.match(/^```(\w*)/);
+    if (fence) {
+      const lang = fence[1];
+      const codeLines = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith('```')) codeLines.push(lines[i++]);
+      if (i < lines.length) i++; // skip closing ```
+      out.push('<pre><code' + (lang ? ' class="language-' + lang + '"' : '') + '>' + escHtml(codeLines.join('\n')) + '</code></pre>');
+      continue;
+    }
+    // Heading
+    const hm = line.match(/^(#{1,6}) (.*)/);
+    if (hm) { out.push('<h' + hm[1].length + '>' + inlineMd(hm[2]) + '</h' + hm[1].length + '>'); i++; continue; }
+    // Horizontal rule
+    if (/^(---+|\*\*\*+)\s*$/.test(line)) { out.push('<hr>'); i++; continue; }
+    // Blockquote
+    if (line.startsWith('> ')) {
+      const ql = [];
+      while (i < lines.length && lines[i].startsWith('> ')) ql.push(lines[i++].slice(2));
+      out.push('<blockquote>' + ql.map(inlineMd).join('<br>') + '</blockquote>');
+      continue;
+    }
+    // Unordered list
+    if (/^[-*] /.test(line)) {
+      const items = [];
+      while (i < lines.length && /^[-*] /.test(lines[i])) items.push('<li>' + inlineMd(lines[i++].replace(/^[-*] /, '')) + '</li>');
+      out.push('<ul>' + items.join('') + '</ul>');
+      continue;
+    }
+    // Ordered list
+    if (/^\d+\. /.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\d+\. /.test(lines[i])) items.push('<li>' + inlineMd(lines[i++].replace(/^\d+\. /, '')) + '</li>');
+      out.push('<ol>' + items.join('') + '</ol>');
+      continue;
+    }
+    // Table (header row | separator row | body rows)
+    if (/^\|/.test(line) && i + 1 < lines.length && /^\|[\s:|-]+\|/.test(lines[i + 1])) {
+      const tRows = [];
+      while (i < lines.length && /^\|/.test(lines[i].trim())) tRows.push(lines[i++]);
+      const parseRow = l => l.split('|').slice(1, -1).map(c => inlineMd(c.trim()));
+      const head = parseRow(tRows[0]);
+      const body = tRows.slice(2);
+      let tHtml = '<table><thead><tr>' + head.map(c => '<th>' + c + '</th>').join('') + '</tr></thead>';
+      if (body.length) tHtml += '<tbody>' + body.map(r => '<tr>' + parseRow(r).map(c => '<td>' + c + '</td>').join('') + '</tr>').join('') + '</tbody>';
+      out.push(tHtml + '</table>');
+      continue;
+    }
+    // Blank line
+    if (!line.trim()) { i++; continue; }
+    // Paragraph: collect consecutive non-block lines
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !lines[i].match(/^(#{1,6} |```|> |[-*] |\d+\. |\|)/) && !/^(---+|\*\*\*+)\s*$/.test(lines[i])) {
+      para.push(inlineMd(lines[i++]));
+    }
+    if (para.length) out.push('<p>' + para.join('<br>') + '</p>');
+    else i++;  // safety: always advance past unrecognized lines
   }
-  // Fallback: escape HTML and render as plain text (used when CDN libs fail to load)
-  const d = document.createElement('div');
-  d.textContent = text;
-  return '<pre style="white-space:pre-wrap">' + d.innerHTML + '</pre>';
+  return out.join('\n');
 }
 
 function scrollBottom() {
   chat.scrollTop = chat.scrollHeight;
+}
+let scrollPending = false;
+function scheduleScroll() {
+  if (!scrollPending) {
+    scrollPending = true;
+    requestAnimationFrame(() => { scrollPending = false; scrollBottom(); });
+  }
 }
 
 function countLines(s) {
@@ -404,7 +576,7 @@ function setProcessing(v) {
   processing = v;
   sendBtn.disabled = v;
   input.disabled = v;
-  if (!v) input.focus();
+  if (!v) { input.placeholder = 'Tell me about this project'; input.focus(); }
 }
 
 // --- Transport: WebSocket with SSE fallback ---
@@ -412,18 +584,18 @@ let useSSE = false;
 let wsConnectAttempts = 0;
 
 function connect() {
-  if (useSSE) { statusWs.textContent = 'http'; return; }
+  if (useSSE) { document.getElementById('status-ws').textContent = 'http'; return; }
   ws = new WebSocket('ws://' + location.host + '/ws');
   const timeout = setTimeout(() => {
     // WS stuck in CONNECTING — proxy doesn't support it
     if (ws.readyState === 0) { ws.close(); switchToSSE(); }
   }, 3000);
-  ws.onopen = () => { clearTimeout(timeout); wsConnectAttempts = 0; statusWs.textContent = 'ws'; };
+  ws.onopen = () => { clearTimeout(timeout); wsConnectAttempts = 0; document.getElementById('status-ws').textContent = 'ws'; };
   ws.onclose = () => {
     clearTimeout(timeout);
     wsConnectAttempts++;
     if (wsConnectAttempts >= 2) { switchToSSE(); }
-    else { statusWs.textContent = 'reconnecting...'; setTimeout(connect, 2000); }
+    else { setTimeout(connect, 2000); }
   };
   ws.onerror = () => { clearTimeout(timeout); };
   ws.onmessage = (e) => handleEvent(JSON.parse(e.data));
@@ -431,7 +603,7 @@ function connect() {
 
 function switchToSSE() {
   useSSE = true;
-  statusWs.textContent = 'http';
+  document.getElementById('status-ws').textContent = 'http';
   console.log('WebSocket unavailable, using HTTP/SSE fallback');
 }
 
@@ -473,8 +645,14 @@ function handleEvent(ev) {
       hideSpinner();
       if (!currentAssistantEl) startAssistantMsg();
       contentBuf += ev.text;
-      currentContentEl.innerHTML = renderMd(contentBuf);
-      scrollBottom();
+      if (!renderPending) {
+        renderPending = true;
+        requestAnimationFrame(() => {
+          if (currentContentEl && contentBuf) currentContentEl.innerHTML = renderMd(contentBuf);
+          renderPending = false;
+          scheduleScroll();
+        });
+      }
       break;
 
     case 'thinking':
@@ -483,7 +661,7 @@ function handleEvent(ev) {
       if (currentThinkingEl) {
         currentThinkingEl.querySelector('pre').textContent = thinkingBuf;
       }
-      scrollBottom();
+      scheduleScroll();
       break;
 
     case 'tool_call':
@@ -521,6 +699,7 @@ function handleEvent(ev) {
       }
       tr.textContent = display;
       chat.appendChild(tr);
+      if (ev.tool_name === 'todo') updateStatus();
       showSpinner(thinkingEnabled ? 'Thinking' : 'Processing');
       scrollBottom();
       break;
@@ -546,6 +725,11 @@ function handleEvent(ev) {
       scrollBottom();
       break;
 
+    case 'theme':
+      if (ev.text === 'auto') document.documentElement.removeAttribute('data-theme');
+      else document.documentElement.setAttribute('data-theme', ev.text);
+      break;
+
     case 'status':
       hideSpinner();
       flushAssistant();
@@ -559,9 +743,9 @@ function handleEvent(ev) {
       st.textContent = ev.text;
       // Update thinking status if it changed
       if (ev.text.startsWith('Thinking mode:')) {
-        if (ev.text.includes('once')) { statusThinking.textContent = 'think:once'; thinkingEnabled = true; }
-        else if (ev.text.includes('ON')) { statusThinking.textContent = 'think:on'; thinkingEnabled = true; }
-        else { statusThinking.textContent = 'think:off'; thinkingEnabled = false; }
+        if (ev.text.includes('once')) { statusThinking.textContent = 'once'; statusThinking.className = 'think-once'; thinkingEnabled = true; }
+        else if (ev.text.includes('ON')) { statusThinking.textContent = 'on'; statusThinking.className = 'think-on'; thinkingEnabled = true; }
+        else { statusThinking.textContent = 'off'; statusThinking.className = 'think-off'; thinkingEnabled = false; }
       }
       // Update workspace if it changed
       if (ev.text.startsWith('Workspace changed to:')) {
@@ -592,6 +776,7 @@ function handleEvent(ev) {
       hideSpinner();
       flushAssistant();
       progressEl = null;
+      updateStatus();
       setProcessing(false);
       if (ev.text === 'quit') {
         fetch('/api/shutdown', {method: 'POST'}).finally(() => window.close());
@@ -716,6 +901,7 @@ function flushAssistant() {
   currentAssistantEl = null;
   currentContentEl = null;
   currentThinkingEl = null;
+  renderPending = false;
 }
 
 // --- Spinner ---
@@ -791,7 +977,7 @@ const COMMAND_HINTS = {
   '/code':      ['',                          'Open workspace in VS Code'],
   '/lazygit':   ['',                          'Open lazygit in a new terminal window'],
   '/clear':     ['',                          'Clear conversation history'],
-  '/config':    ['[tools | set KEY VAL]',      'Show/edit config or tool enables'],
+  '/config':    ['[tools | theme | set KEY VAL]', 'Show/edit config or tool enables'],
   '/info':      ['[prompt|context|tools]',      'Show model info, system prompt/context, or available tools'],
   '/pull':      ['[model|all]',               "Pull a model; 'all' pulls every local model"],
   '/update':    ['ollama|models',             'Update Ollama binary or pull all local models'],
@@ -806,6 +992,7 @@ const SAFETY_OPTIONS = ['confirm', 'workspace', 'none'];
 const UPDATE_OPTIONS = ['ollama', 'models'];
 const INFO_OPTIONS = ['prompt', 'context', 'tools'];
 const TOOL_NAMES = ['bash', 'read_file', 'write_file', 'list_files', 'python_exec', 'todo', 'fetch_webpage'];
+const THEME_OPTIONS = ['light', 'dark', 'auto'];
 
 function getHint(line) {
   const s = line.trimStart();
@@ -853,10 +1040,14 @@ function getHint(line) {
     if (cmdPart === '/config') {
       const subParts = argPart.split(/\s+/).filter(Boolean);
       const firstSub = subParts[0] || '';
-      if ('tools'.startsWith(firstSub) && firstSub !== 'set') {
+      if ('tools'.startsWith(firstSub) && firstSub !== 'set' && firstSub !== 'theme') {
         if (subParts.length <= 1) return '/config tools [<tool> [global] [workspace]]  Configure tool access';
         if (subParts.length === 2) return '/config tools <tool> on|off|_  (global; _ = keep)';
         if (subParts.length === 3) return `/config tools <tool> ${subParts[2]} on|off|inherit|_  (workspace)`;
+        return '';
+      }
+      if ('theme'.startsWith(firstSub) && firstSub !== 'set' && firstSub !== 'tools') {
+        if (subParts.length <= 1) return '/config theme light|dark|auto  Set UI color theme';
         return '';
       }
       return desc ? cmdPart + ' ' + argH + '  ' + desc : cmdPart + ' ' + argH;
@@ -908,17 +1099,28 @@ function getCompletions(line) {
     const partial = s.slice(6).trimStart();
     return INFO_OPTIONS.filter(o => o.startsWith(partial)).map(o => '/info ' + o);
   }
-  // /config tools|set ...
+  // /config tools|theme|set ...
   if (s.startsWith('/config ')) {
-    const rest = s.slice(8).trimStart();
-    const rp = rest.split(/\s+/).filter(Boolean);
+    const rest = s.slice(8);
+    const trailing = rest !== rest.trimEnd();
+    const rp = rest.trim().split(/\s+/).filter(Boolean);
     const first = rp[0] || '';
-    if ('tools'.startsWith(first) && first !== 'set') {
-      if (rp.length === 0) return ['/config set', '/config tools'];
-      if (rp.length === 1) return ['tools', 'set'].filter(x => x.startsWith(first)).map(x => '/config ' + x);
-      if (rp.length === 2) return TOOL_NAMES.filter(n => n.startsWith(rp[1])).map(n => `/config tools ${n}`);
-      if (rp.length === 3) return ['on', 'off', '_'].filter(v => v.startsWith(rp[2])).map(v => `/config tools ${rp[1]} ${v}`);
+    const subcmds = ['set', 'theme', 'tools'];
+    // still typing the subcommand token
+    if (!trailing && rp.length <= 1) return subcmds.filter(x => x.startsWith(first)).map(x => '/config ' + x);
+    // /config tools ...
+    if (first === 'tools') {
+      if (rp.length === 1) return TOOL_NAMES.map(n => `/config tools ${n}`);
+      if (rp.length === 2 && !trailing) return TOOL_NAMES.filter(n => n.startsWith(rp[1])).map(n => `/config tools ${n}`);
+      if (rp.length === 2) return ['on', 'off', '_'].map(v => `/config tools ${rp[1]} ${v}`);
+      if (rp.length === 3 && !trailing) return ['on', 'off', '_'].filter(v => v.startsWith(rp[2])).map(v => `/config tools ${rp[1]} ${v}`);
+      if (rp.length === 3) return ['on', 'off', 'inherit'].map(v => `/config tools ${rp[1]} ${rp[2]} ${v}`);
       if (rp.length === 4) return ['on', 'off', 'inherit'].filter(v => v.startsWith(rp[3])).map(v => `/config tools ${rp[1]} ${rp[2]} ${v}`);
+    }
+    // /config theme ...
+    if (first === 'theme') {
+      if (rp.length === 1) return THEME_OPTIONS.map(v => `/config theme ${v}`);
+      return THEME_OPTIONS.filter(v => v.startsWith(rp[1])).map(v => `/config theme ${v}`);
     }
     return [];
   }
@@ -1026,7 +1228,10 @@ function richToHtml(text) {
   return html;
 }
 
-function initWelcome() {
+const APP_VERSION = __VERSION__;
+const OLLAMA_URL = __OLLAMA_URL__;
+
+async function initWelcome() {
   const frag = document.createDocumentFragment();
   const bannerEl = document.createElement('div');
   bannerEl.className = 'banner';
@@ -1034,8 +1239,12 @@ function initWelcome() {
   frag.appendChild(bannerEl);
   const metaEl = document.createElement('div');
   metaEl.className = 'banner-meta';
-  metaEl.textContent = 'v0.1.0 \u2014 ' + __MODEL_NAME_JSON__ + ' \u2014 ' + __WORKSPACE_JSON__;
+  metaEl.textContent = 'v' + APP_VERSION + ' \u2014 ' + __MODEL_NAME_JSON__ + ' \u2014 ' + __WORKSPACE_JSON__;
   frag.appendChild(metaEl);
+  const ollamaMetaEl = document.createElement('div');
+  ollamaMetaEl.className = 'banner-meta';
+  ollamaMetaEl.id = 'ollama-version-line';
+  frag.appendChild(ollamaMetaEl);
   const tipEl = document.createElement('div');
   tipEl.className = 'msg-status';
   tipEl.textContent = 'Type /help for commands';
@@ -1053,19 +1262,13 @@ function initWelcome() {
     frag.appendChild(dbgEl);
   }
   chat.appendChild(frag);
-}
-
-// --- Theme toggle ---
-function toggleTheme() {
-  const html = document.documentElement;
-  const current = html.getAttribute('data-theme');
-  let next;
-  if (!current) next = 'light';
-  else if (current === 'light') next = 'dark';
-  else next = null;
-  if (next) html.setAttribute('data-theme', next);
-  else html.removeAttribute('data-theme');
-  document.getElementById('theme-toggle').textContent = 'theme:' + (next || 'auto');
+  // Fetch Ollama version asynchronously after rendering banner
+  try {
+    const r = await fetch('/api/version');
+    const d = await r.json();
+    const el = document.getElementById('ollama-version-line');
+    if (el && d.version) el.textContent = 'Ollama ' + d.version + ' \u2014 ' + d.url;
+  } catch(e) {}
 }
 
 initWelcome();

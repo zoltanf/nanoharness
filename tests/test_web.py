@@ -61,8 +61,41 @@ class TestIndexPage:
 
     def test_contains_status_bar(self, client):
         resp = client.get("/")
-        assert "status" in resp.text
-        assert "think:" in resp.text
+        assert 'id="status"' in resp.text
+        assert 'id="status-ctx"' in resp.text
+        assert 's-lbl' in resp.text
+
+    def test_no_theme_toggle_button(self, client):
+        resp = client.get("/")
+        assert "theme-toggle" not in resp.text
+        assert "toggleTheme" not in resp.text
+
+    def test_auto_theme_no_data_attribute(self, client):
+        """Default config (auto) should not set data-theme on the <html> tag."""
+        resp = client.get("/")
+        # The <html> tag must not have data-theme (CSS selectors elsewhere don't count)
+        html_tag = resp.text.split(">")[0]  # everything up to and including the first >
+        assert 'data-theme=' not in html_tag
+
+    def test_light_theme_sets_data_attribute(self, config: Config):
+        from nanoharness.web import create_app
+        config.ui.theme = "light"
+        agent = _make_mock_agent(config)
+        app = create_app(agent, open_browser=False)
+        from starlette.testclient import TestClient
+        c = TestClient(app)
+        resp = c.get("/")
+        assert 'data-theme="light"' in resp.text
+
+    def test_dark_theme_sets_data_attribute(self, config: Config):
+        from nanoharness.web import create_app
+        config.ui.theme = "dark"
+        agent = _make_mock_agent(config)
+        app = create_app(agent, open_browser=False)
+        from starlette.testclient import TestClient
+        c = TestClient(app)
+        resp = c.get("/")
+        assert 'data-theme="dark"' in resp.text
 
 
 class TestSSEEndpoint:
