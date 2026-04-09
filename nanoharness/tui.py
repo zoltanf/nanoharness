@@ -20,7 +20,7 @@ from rich.markup import escape
 from rich.markdown import Markdown
 
 from .completion import complete_line, hint_for_input, is_incomplete_command, command_send_error
-from .tools import format_confirm_preview
+from .tools import format_confirm_preview, _count_lines
 from . import logging as dbg, BANNER as _BANNER, __version__
 from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON
 
@@ -28,6 +28,21 @@ if TYPE_CHECKING:
     from .agent import Agent
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+_UI_PREVIEW_LIMIT = 500
+
+
+def _ui_clip_notice(ui_shown: int, ui_clipped: bool, model_shown: int, lines_total: int) -> str:
+    """Build the notice appended to tool output. Returns '' when no line metadata available."""
+    if model_shown == 0 and lines_total == 0:
+        return ""  # char-clipped or no info
+    if model_shown > 0 and lines_total > 0 and model_shown < lines_total:
+        # Backend truncated — its notice is already embedded in the text.
+        # Only add UI notice when UI also clipped (to report the extra cut).
+        return f"[{ui_shown} lines shown · model: {model_shown}/{lines_total}]" if ui_clipped else ""
+    # Model saw all lines (no backend truncation), or read_file (lines_total == 0).
+    n = lines_total if lines_total > 0 else model_shown
+    return f"[{ui_shown}/{n} lines shown · model: all]" if ui_clipped else f"[{n} lines · all]"
 
 
 class HintLine(Static):
@@ -220,7 +235,7 @@ class SpinnerLine(Static):
 
     def _update_display(self) -> None:
         frame = SPINNER_FRAMES[self._frame]
-        self.update(f"{frame} {self._label}...")
+        self.update(f"{frame} {self._label}... [dim](press ESC to interrupt)[/dim]")
 
 
 class StatusBar(Static):
@@ -595,11 +610,22 @@ class NanoHarnessApp(App):
                     case "tool_result":
                         spinner.stop()
                         status_bar.set_net("↑")
-                        preview = ev.text[:500]
-                        if len(ev.text) > 500:
-                            preview += "..."
+                        got_first_output = False
+                        raw = ev.text
+                        if len(raw) <= _UI_PREVIEW_LIMIT:
+                            ui_shown = _count_lines(raw)
+                            notice = _ui_clip_notice(ui_shown, False, ev.lines_shown, ev.lines_total)
+                            display = raw + (f"\n{notice}" if notice else "")
+                        else:
+                            cut = raw.rfind('\n', 0, _UI_PREVIEW_LIMIT)
+                            if cut == -1:
+                                cut = _UI_PREVIEW_LIMIT
+                            preview = raw[:cut]
+                            ui_shown = _count_lines(preview)
+                            notice = _ui_clip_notice(ui_shown, True, ev.lines_shown, ev.lines_total)
+                            display = preview + (f"\n{notice}" if notice else "")
                         self._append_chat(Text.from_markup(
-                            f"[dim green]{escape(preview)}[/]"
+                            f"[dim green]{escape(display)}[/]\n"
                         ))
                         spinner.start("Thinking" if self.agent.config.model.thinking else "Processing")
 

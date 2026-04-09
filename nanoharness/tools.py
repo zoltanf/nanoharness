@@ -8,7 +8,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, NamedTuple
 
 import httpx
 
@@ -39,19 +39,12 @@ TOOL_SCHEMAS: list[dict] = [
         }, "required": ["path", "content"]},
     }},
     {"type": "function", "function": {
-        "name": "list_dir",
-        "description": "List directory contents",
+        "name": "list_files",
+        "description": "List directory contents or find files by glob pattern (skips .git). Without pattern: lists entries in path. With pattern: searches recursively.",
         "parameters": {"type": "object", "properties": {
-            "path": {"type": "string"},
+            "path": {"type": "string", "description": "Directory to list or search in (default: workspace root)"},
+            "pattern": {"type": "string", "description": "Glob pattern, e.g. '*.py', '**/*.toml', '*config*' (omit to list directory)"},
         }, "required": []},
-    }},
-    {"type": "function", "function": {
-        "name": "search_files",
-        "description": "Find files matching a glob pattern recursively within the workspace. Skips .git. Returns paths relative to workspace root.",
-        "parameters": {"type": "object", "properties": {
-            "pattern": {"type": "string", "description": "Glob pattern, e.g. '*.py', '**/*.toml', '*config*'"},
-            "path": {"type": "string", "description": "Directory to search in (default: workspace root)"},
-        }, "required": ["pattern"]},
     }},
     {"type": "function", "function": {
         "name": "python_exec",
@@ -115,10 +108,38 @@ _SENSITIVE_EXACT = frozenset({
 _CONFIRM_TOOLS = frozenset({"bash", "python_exec", "write_file"})
 
 
-def _clip(text: str, max_chars: int) -> str:
+class ClipResult(NamedTuple):
+    text: str
+    lines_shown: int   # 0 = no line metadata (char-clipped, empty, or n/a)
+    lines_total: int   # 0 = unknown total (read_file) or no metadata
+
+
+def _count_lines(text: str) -> int:
+    if not text:
+        return 0
+    return text.count('\n') + (0 if text.endswith('\n') else 1)
+
+
+def _clip_lines(text: str, max_chars: int) -> ClipResult:
+    total = _count_lines(text)
     if len(text) <= max_chars:
-        return text
-    return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
+        return ClipResult(text, total, total)
+    cut = text.rfind('\n', 0, max_chars)
+    if cut == -1:
+        # No newline within budget — clip at char boundary.
+        # Return (0, 0) sentinel so the UI doesn't show a misleading "1 of 1 lines" notice.
+        clipped = text[:max_chars]
+        notice = f"\n[Output truncated: {max_chars} of {len(text)} chars shown]"
+        return ClipResult(clipped + notice, 0, 0)
+    clipped = text[:cut]
+    shown = _count_lines(clipped)
+    notice = f"\n[Output truncated: {shown} of {total} lines shown]"
+    return ClipResult(clipped + notice, shown, total)
+
+
+def _clip(text: str, max_chars: int) -> str:
+    """Backwards-compatible alias for _clip_lines — returns text only."""
+    return _clip_lines(text, max_chars).text
 
 
 class ToolExecutor:
@@ -156,52 +177,59 @@ class ToolExecutor:
         env["HOME"] = str(self.workspace)
         return env
 
-    async def execute(self, name: str, arguments: dict[str, Any], *, confirm: bool = True) -> str:
-        """Execute a tool by name and return the result as a string."""
+    async def execute(self, name: str, arguments: dict[str, Any], *, confirm: bool = True) -> tuple[str, str, int, int]:
+        """Execute a tool by name. Returns (model_text, ui_text, lines_shown, lines_total).
+        model_text goes to LLM history; ui_text is shown in the interface (may include a content
+        preview not sent to the model). For most tools model_text == ui_text."""
         try:
             if confirm and self.safety == "confirm" and name in _CONFIRM_TOOLS and self.confirm_fn:
                 allowed = await self.confirm_fn(name, arguments)
                 if not allowed:
-                    return "User denied this action."
+                    return "User denied this action.", "User denied this action.", 0, 0
             match name:
                 case "bash":
-                    return await self._bash(arguments.get("command", ""))
+                    t, ls, lt = await self._bash(arguments.get("command", ""))
+                    return t, t, ls, lt
                 case "read_file":
-                    return self._read_file(
+                    t, ls, lt = self._read_file(
                         arguments.get("path", ""),
                         arguments.get("max_chars", 0),
                         arguments.get("offset", 0),
                     )
+                    return t, t, ls, lt
                 case "write_file":
                     return self._write_file(
                         arguments.get("path", ""),
                         arguments.get("content", ""),
                     )
-                case "list_dir":
-                    return self._list_dir(arguments.get("path", "."))
-                case "search_files":
-                    return self._search_files(
-                        arguments.get("pattern", ""),
+                case "list_files":
+                    t, ls, lt = self._list_files(
                         arguments.get("path", "."),
+                        arguments.get("pattern"),
                     )
+                    return t, t, ls, lt
                 case "python_exec":
-                    return await self._python_exec(arguments.get("code", ""))
+                    t, ls, lt = await self._python_exec(arguments.get("code", ""))
+                    return t, t, ls, lt
                 case "todo":
-                    return self._todo(
+                    t = self._todo(
                         arguments.get("action", "list"),
                         arguments.get("task"),
                         arguments.get("id"),
                     )
+                    return t, t, 0, 0
                 case "fetch_webpage":
-                    return await self._fetch_webpage(arguments.get("url", ""))
+                    t, ls, lt = await self._fetch_webpage(arguments.get("url", ""))
+                    return t, t, ls, lt
                 case _:
-                    return f"Unknown tool: {name}"
+                    return f"Unknown tool: {name}", f"Unknown tool: {name}", 0, 0
         except Exception as e:
-            return f"Error: {type(e).__name__}: {e}"
+            err = f"Error: {type(e).__name__}: {e}"
+            return err, err, 0, 0
 
-    async def _bash(self, command: str) -> str:
+    async def _bash(self, command: str) -> tuple[str, int, int]:
         if not command.strip():
-            return "Error: empty command"
+            return "Error: empty command", 0, 0
         env = self._scrubbed_env() if self.safety != "none" else None
         proc = await asyncio.create_subprocess_shell(
             command,
@@ -214,19 +242,23 @@ class ToolExecutor:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
         except asyncio.TimeoutError:
             proc.kill()
-            return f"Error: command timed out after {self.timeout}s"
+            return f"Error: command timed out after {self.timeout}s", 0, 0
         out = stdout.decode("utf-8", errors="replace") if stdout else ""
         err = stderr.decode("utf-8", errors="replace") if stderr else ""
         result = ""
-        if out:
-            result += _clip(out, self.max_chars)
+        stdout_cr = _clip_lines(out, self.max_chars) if out else None
+        if stdout_cr:
+            result += stdout_cr.text
         if err:
-            result += f"\nstderr: {_clip(err, self.max_chars)}"
+            result += f"\nstderr: {_clip_lines(err, self.max_chars).text}"
         if proc.returncode != 0:
             result += f"\nexit code: {proc.returncode}"
-        return result.strip() or "(no output)"
+        final = result.strip() or "(no output)"
+        ls = stdout_cr.lines_shown if stdout_cr else 0
+        lt = stdout_cr.lines_total if stdout_cr else 0
+        return final, ls, lt
 
-    def _read_file(self, path: str, max_chars: int = 0, offset: int = 0) -> str:
+    def _read_file(self, path: str, max_chars: int = 0, offset: int = 0) -> tuple[str, int, int]:
         p = self._safe_path(path)
         limit = min(max_chars, self.max_chars) if max_chars else self.max_chars
         try:
@@ -236,42 +268,53 @@ class ToolExecutor:
                     f.seek(offset)
                 text = f.read(limit + 1)
         except (FileNotFoundError, IsADirectoryError, OSError) as e:
-            return f"Error: {e}"
+            return f"Error: {e}", 0, 0
         prefix = f"[offset {offset}] " if offset else ""
         if len(text) > limit:
-            end = offset + limit
-            return prefix + text[:limit] + f"\n...[truncated, showing bytes {offset}-{end} of {size}]"
-        return prefix + text
+            cut = text.rfind('\n', 0, limit)
+            if cut == -1:
+                cut = limit
+            clipped = text[:cut]
+            shown = _count_lines(clipped)
+            end = offset + cut
+            notice = f"\n[Output truncated: {shown} lines shown, bytes {offset}-{end} of {size}; use offset={end} to continue]"
+            return prefix + clipped + notice, shown, 0   # lines_total=0: full file not read
+        total = _count_lines(text)
+        return prefix + text, total, total
 
-    def _write_file(self, path: str, content: str) -> str:
+    def _write_file(self, path: str, content: str) -> tuple[str, str, int, int]:
+        """Returns (model_text, ui_text, lines_shown, lines_total).
+        model_text is just the status header; ui_text also includes a clipped content preview."""
         p = self._safe_path(path)
         if any(part.lower() == ".git" for part in p.relative_to(self.workspace).parts):
-            return "Error: write_file cannot modify .git directory"
+            err = "Error: write_file cannot modify .git directory"
+            return err, err, 0, 0
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
-        return f"Wrote {len(content)} bytes to {p.relative_to(self.workspace)}"
+        header = f"Wrote {len(content)} bytes to {p.relative_to(self.workspace)}"
+        if not content:
+            return header, header, 0, 0
+        cr = _clip_lines(content, self.max_chars)
+        return header, header + "\n" + cr.text, cr.lines_shown, cr.lines_total
 
-    def _list_dir(self, path: str = ".") -> str:
-        p = self._safe_path(path)
-        try:
-            items = list(p.iterdir())
-        except (FileNotFoundError, NotADirectoryError, OSError) as e:
-            return f"Error: {e}"
-        entries = sorted(
-            f"{x.name}/" if x.is_dir() else x.name
-            for x in items
-            if not x.name.startswith(".")
-        )
-        if not entries:
-            return "(empty directory)"
-        return "\n".join(entries)
-
-    def _search_files(self, pattern: str, path: str = ".") -> str:
+    def _list_files(self, path: str = ".", pattern: str | None = None) -> tuple[str, int, int]:
         if not pattern:
-            return "Error: pattern is required"
+            p = self._safe_path(path)
+            try:
+                items = list(p.iterdir())
+            except (FileNotFoundError, NotADirectoryError, OSError) as e:
+                return f"Error: {e}", 0, 0
+            entries = sorted(
+                f"{x.name}/" if x.is_dir() else x.name
+                for x in items
+                if not x.name.startswith(".")
+            )
+            text = "\n".join(entries) if entries else "(empty directory)"
+            count = _count_lines(text)
+            return text, count, count
         base = self._safe_path(path)
         if not base.is_dir():
-            return f"Not a directory: {path}"
+            return f"Not a directory: {path}", 0, 0
         MAX_RESULTS = 200
         results = []
         for match in base.rglob(pattern):
@@ -285,15 +328,16 @@ class ToolExecutor:
             if len(results) >= MAX_RESULTS:
                 break
         if not results:
-            return "No files found."
+            return "No files found.", 0, 0
         output = "\n".join(results)
         if len(results) >= MAX_RESULTS:
             output += "\n...[200 result limit reached — narrow your pattern or specify a subdirectory]"
-        return _clip(output, self.max_chars)
+        cr = _clip_lines(output, self.max_chars)
+        return cr.text, cr.lines_shown, cr.lines_total
 
-    async def _python_exec(self, code: str) -> str:
+    async def _python_exec(self, code: str) -> tuple[str, int, int]:
         if not code.strip():
-            return "Error: empty code"
+            return "Error: empty code", 0, 0
         env = self._scrubbed_env() if self.safety != "none" else None
         with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
             f.write(code)
@@ -310,19 +354,23 @@ class ToolExecutor:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout)
             except asyncio.TimeoutError:
                 proc.kill()
-                return f"Error: python_exec timed out after {self.timeout}s"
+                return f"Error: python_exec timed out after {self.timeout}s", 0, 0
         finally:
             os.unlink(tmp_path)
         out = stdout.decode("utf-8", errors="replace") if stdout else ""
         err = stderr.decode("utf-8", errors="replace") if stderr else ""
         result = ""
-        if out:
-            result += _clip(out, self.max_chars)
+        stdout_cr = _clip_lines(out, self.max_chars) if out else None
+        if stdout_cr:
+            result += stdout_cr.text
         if err:
-            result += f"\nstderr: {_clip(err, self.max_chars)}"
+            result += f"\nstderr: {_clip_lines(err, self.max_chars).text}"
         if proc.returncode != 0:
             result += f"\nexit code: {proc.returncode}"
-        return result.strip() or "(no output)"
+        final = result.strip() or "(no output)"
+        ls = stdout_cr.lines_shown if stdout_cr else 0
+        lt = stdout_cr.lines_total if stdout_cr else 0
+        return final, ls, lt
 
     def _load_todo(self) -> list[dict]:
         if not self._todo_file.is_file():
@@ -409,11 +457,11 @@ class ToolExecutor:
             return None, None
         return pending[0] if pending else None, f"Tasks: {done}/{total} done"
 
-    async def _fetch_webpage(self, url: str) -> str:
+    async def _fetch_webpage(self, url: str) -> tuple[str, int, int]:
         from urllib.parse import urlparse
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
-            return f"Error: unsupported scheme '{parsed.scheme}'. Only http/https are allowed."
+            return f"Error: unsupported scheme '{parsed.scheme}'. Only http/https are allowed.", 0, 0
         try:
             async with httpx.AsyncClient(
                 follow_redirects=True,
@@ -424,11 +472,11 @@ class ToolExecutor:
                 response.raise_for_status()
                 html = response.text
         except httpx.TimeoutException:
-            return f"Error: request timed out after {self.timeout}s"
+            return f"Error: request timed out after {self.timeout}s", 0, 0
         except httpx.HTTPStatusError as e:
-            return f"Error: HTTP {e.response.status_code} for {url}"
+            return f"Error: HTTP {e.response.status_code} for {url}", 0, 0
         except httpx.RequestError as e:
-            return f"Error: {type(e).__name__}: {e}"
+            return f"Error: {type(e).__name__}: {e}", 0, 0
         try:
             import trafilatura
             text = trafilatura.extract(html, include_links=False, include_images=False)
@@ -444,5 +492,6 @@ class ToolExecutor:
                 s.feed(html)
                 text = s.get_text()
         except ImportError:
-            return "Error: 'trafilatura' not installed. Run: uv add trafilatura"
-        return _clip(text.strip() or "(no content extracted)", self.max_chars)
+            return "Error: 'trafilatura' not installed. Run: uv add trafilatura", 0, 0
+        cr = _clip_lines(text.strip() or "(no content extracted)", self.max_chars)
+        return cr.text, cr.lines_shown, cr.lines_total

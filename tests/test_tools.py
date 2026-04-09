@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from nanoharness.tools import ToolExecutor, _clip, format_confirm_preview
+from nanoharness.tools import ToolExecutor, _clip, _clip_lines, _count_lines, ClipResult, format_confirm_preview
 
 
 class TestClip:
@@ -24,6 +24,68 @@ class TestClip:
     def test_exact_boundary(self):
         text = "a" * 50
         assert _clip(text, 50) == text
+
+
+class TestClipLines:
+    def test_short_text_no_truncation(self):
+        r = _clip_lines("line1\nline2\n", 100)
+        assert r.text == "line1\nline2\n"
+        assert r.lines_shown == 2
+        assert r.lines_total == 2
+
+    def test_clips_at_line_boundary(self):
+        text = "line1\nline2\nline3\n"
+        r = _clip_lines(text, 12)  # "line1\nline2\n" is 12 chars — stays, line3 cut
+        assert "line3" not in r.text
+        assert r.lines_shown < r.lines_total
+        assert "lines shown" in r.text
+
+    def test_notice_format(self):
+        text = "\n".join(f"line{i}" for i in range(10))
+        r = _clip_lines(text, 20)
+        assert "[Output truncated:" in r.text
+        assert "of 10 lines shown]" in r.text
+
+    def test_exact_boundary_no_clip(self):
+        text = "abc\ndef"
+        r = _clip_lines(text, len(text))
+        assert r.text == text
+        assert r.lines_shown == r.lines_total == 2
+
+    def test_no_newlines_uses_char_notice(self):
+        # Single long line with no newlines — must NOT produce "1 of 1 lines shown"
+        text = "a" * 200
+        r = _clip_lines(text, 50)
+        assert r.lines_shown == 0      # (0, 0) sentinel
+        assert r.lines_total == 0
+        assert "chars shown" in r.text
+        assert "lines shown" not in r.text
+
+    def test_no_newlines_fits_in_budget(self):
+        text = "a" * 50
+        r = _clip_lines(text, 100)
+        assert r.lines_shown == 1      # 1 line, no clip
+        assert r.lines_total == 1
+        assert r.text == text
+
+    def test_empty_text(self):
+        r = _clip_lines("", 100)
+        assert r.lines_shown == 0
+        assert r.lines_total == 0
+        assert r.text == ""
+
+    def test_trailing_newline_counts_correctly(self):
+        text = "a\nb\n"
+        r = _clip_lines(text, 100)
+        assert r.lines_shown == 2
+        assert r.lines_total == 2
+
+    def test_count_lines_helper(self):
+        assert _count_lines("") == 0
+        assert _count_lines("abc") == 1
+        assert _count_lines("abc\n") == 1
+        assert _count_lines("abc\ndef") == 2
+        assert _count_lines("abc\ndef\n") == 2
 
 
 class TestSafePath:
@@ -57,32 +119,32 @@ class TestSafePath:
 class TestReadFile:
     def test_read_existing(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._read_file("hello.py")
+        result, *_ = te._read_file("hello.py")
         assert "print('hello')" in result
 
     def test_read_nonexistent(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._read_file("nope.txt")
+        result, *_ = te._read_file("nope.txt")
         assert "Error" in result
 
     def test_max_chars(self, workspace: Path):
         big_file = workspace / "big.txt"
         big_file.write_text("x" * 10000)
         te = ToolExecutor(workspace=workspace)
-        result = te._read_file("big.txt", max_chars=100)
+        result, *_ = te._read_file("big.txt", max_chars=100)
         assert "truncated" in result
 
 
 class TestWriteFile:
     def test_write_creates(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._write_file("new.txt", "hello world")
+        result, _ui, *_ = te._write_file("new.txt", "hello world")
         assert "Wrote" in result
         assert (workspace / "new.txt").read_text() == "hello world"
 
     def test_write_creates_parents(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._write_file("sub/dir/file.txt", "deep")
+        result, _ui, *_ = te._write_file("sub/dir/file.txt", "deep")
         assert "Wrote" in result
         assert (workspace / "sub" / "dir" / "file.txt").read_text() == "deep"
 
@@ -93,79 +155,140 @@ class TestWriteFile:
 
     def test_write_git_dir_blocked(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._write_file(".git/config", "bad")
+        result, _ui, *_ = te._write_file(".git/config", "bad")
         assert "Error" in result
         assert not (workspace / ".git" / "config").exists()
 
     def test_write_git_subpath_blocked(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._write_file(".git/hooks/pre-commit", "bad")
+        result, _ui, *_ = te._write_file(".git/hooks/pre-commit", "bad")
         assert "Error" in result
 
 
-class TestListDir:
+class TestListFiles:
     def test_lists_files(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._list_dir(".")
+        result, *_ = te._list_files(".")
         assert "hello.py" in result
         assert "src/" in result
 
     def test_default_workspace(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._list_dir(".")
+        result, *_ = te._list_files(".")
         assert "README.md" in result
 
     def test_nonexistent(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._list_dir("nonexistent")
+        result, *_ = te._list_files("nonexistent")
         assert "Error" in result
 
     def test_hidden_filtered(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = te._list_dir(".")
+        result, *_ = te._list_files(".")
         assert ".hidden" not in result
+
+    def test_basic_glob(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result, *_ = te._list_files(".", pattern="*.py")
+        assert "hello.py" in result
+        assert "src/main.py" in result
+
+    def test_pattern_with_subdirectory(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result, *_ = te._list_files("src", pattern="*.py")
+        assert "src/main.py" in result
+        assert "hello.py" not in result
+
+    def test_no_matches(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result, *_ = te._list_files(".", pattern="*.nonexistent")
+        assert result == "No files found."
+
+    def test_nonexistent_directory(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result, *_ = te._list_files("missing_dir", pattern="*.py")
+        assert "Not a directory" in result
+
+    def test_path_outside_workspace_blocked(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, safety="workspace")
+        with pytest.raises(ValueError, match="escapes workspace"):
+            te._list_files("../../etc", pattern="*.py")
+
+    def test_path_outside_workspace_allowed_with_none_safety(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace, safety="none")
+        result, *_ = te._list_files("/tmp", pattern="*.py")
+        assert "Not a directory" not in result
+
+    def test_git_dir_skipped(self, workspace: Path):
+        git_dir = workspace / ".git"
+        git_dir.mkdir()
+        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        te = ToolExecutor(workspace=workspace)
+        result, *_ = te._list_files(".", pattern="HEAD")
+        assert ".git" not in result
+
+    def test_hidden_files_included(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result, *_ = te._list_files(".", pattern="secret.txt")
+        assert "secret.txt" in result
+
+    def test_results_relative_to_workspace(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        result, *_ = te._list_files(".", pattern="main.py")
+        assert str(workspace) not in result
+        assert "src/main.py" in result
+
+    def test_count_cap(self, workspace: Path):
+        many = workspace / "many"
+        many.mkdir()
+        for i in range(201):
+            (many / f"file{i}.txt").write_text("")
+        te = ToolExecutor(workspace=workspace)
+        result, *_ = te._list_files("many", pattern="*.txt")
+        assert "200 result limit reached" in result
+        assert result.count(".txt") == 200
 
 
 class TestBash:
     @pytest.mark.asyncio
     async def test_simple_command(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te._bash("echo hello")
+        result, *_ = await te._bash("echo hello")
         assert "hello" in result
 
     @pytest.mark.asyncio
     async def test_cwd(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te._bash("pwd")
+        result, *_ = await te._bash("pwd")
         assert str(workspace) in result
 
     @pytest.mark.asyncio
     async def test_empty_command(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te._bash("")
+        result, *_ = await te._bash("")
         assert "Error" in result
 
     @pytest.mark.asyncio
     async def test_timeout(self, workspace: Path):
         te = ToolExecutor(workspace=workspace, timeout=1)
-        result = await te._bash("sleep 10")
+        result, *_ = await te._bash("sleep 10")
         assert "timed out" in result
 
 
 class TestPythonExec:
     async def test_simple(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te._python_exec("print(2 + 2)")
+        result, *_ = await te._python_exec("print(2 + 2)")
         assert "4" in result
 
     async def test_empty_code(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te._python_exec("")
+        result, *_ = await te._python_exec("")
         assert "Error" in result
 
     async def test_exception(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te._python_exec("raise ValueError('boom')")
+        result, *_ = await te._python_exec("raise ValueError('boom')")
         assert "ValueError" in result
         assert "boom" in result
 
@@ -208,7 +331,7 @@ class TestConfirmGate:
             return False
 
         te.confirm_fn = deny_all
-        result = await te.execute("bash", {"command": "echo hello"})
+        result, _ui, *_ = await te.execute("bash", {"command": "echo hello"})
         assert result == "User denied this action."
 
     async def test_confirm_fn_allow_executes(self, workspace: Path):
@@ -218,7 +341,7 @@ class TestConfirmGate:
             return True
 
         te.confirm_fn = allow_all
-        result = await te.execute("bash", {"command": "echo hello"})
+        result, _ui, *_ = await te.execute("bash", {"command": "echo hello"})
         assert "hello" in result
 
     async def test_no_confirm_for_read_file(self, workspace: Path):
@@ -230,7 +353,7 @@ class TestConfirmGate:
             return False
 
         te.confirm_fn = track
-        result = await te.execute("read_file", {"path": "hello.py"})
+        result, _ui, *_ = await te.execute("read_file", {"path": "hello.py"})
         assert not called  # confirm not invoked for read_file
         assert "Error" not in result or "print" in result
 
@@ -238,7 +361,7 @@ class TestConfirmGate:
         """confirm_fn=None with safety=confirm still executes (no confirm possible)."""
         te = ToolExecutor(workspace=workspace, safety="confirm")
         te.confirm_fn = None
-        result = await te.execute("bash", {"command": "echo hi"})
+        result, _ui, *_ = await te.execute("bash", {"command": "echo hi"})
         assert "hi" in result
 
 
@@ -345,100 +468,31 @@ class TestTodoSummary:
         assert "Next: Second" in summary
 
 
-class TestSearchFiles:
-    def test_basic_glob(self, workspace: Path):
-        te = ToolExecutor(workspace=workspace)
-        result = te._search_files("*.py")
-        assert "hello.py" in result
-        assert "src/main.py" in result
-
-    def test_pattern_with_subdirectory(self, workspace: Path):
-        te = ToolExecutor(workspace=workspace)
-        result = te._search_files("*.py", path="src")
-        assert "src/main.py" in result
-        assert "hello.py" not in result
-
-    def test_no_matches(self, workspace: Path):
-        te = ToolExecutor(workspace=workspace)
-        result = te._search_files("*.nonexistent")
-        assert result == "No files found."
-
-    def test_nonexistent_directory(self, workspace: Path):
-        te = ToolExecutor(workspace=workspace)
-        result = te._search_files("*.py", path="missing_dir")
-        assert "Not a directory" in result
-
-    def test_path_outside_workspace_blocked(self, workspace: Path):
-        te = ToolExecutor(workspace=workspace, safety="workspace")
-        with pytest.raises(ValueError, match="escapes workspace"):
-            te._search_files("*.py", path="../../etc")
-
-    def test_path_outside_workspace_allowed_with_none_safety(self, workspace: Path):
-        te = ToolExecutor(workspace=workspace, safety="none")
-        # /tmp is always a real directory and outside any pytest workspace
-        result = te._search_files("*.py", path="/tmp")
-        assert "Not a directory" not in result
-
-    def test_git_dir_skipped(self, workspace: Path):
-        git_dir = workspace / ".git"
-        git_dir.mkdir()
-        (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
-        te = ToolExecutor(workspace=workspace)
-        result = te._search_files("HEAD")
-        assert ".git" not in result
-
-    def test_hidden_files_included(self, workspace: Path):
-        te = ToolExecutor(workspace=workspace)
-        result = te._search_files("secret.txt")
-        assert "secret.txt" in result
-
-    def test_results_relative_to_workspace(self, workspace: Path):
-        te = ToolExecutor(workspace=workspace)
-        result = te._search_files("main.py")
-        # Should be relative path, not absolute
-        assert str(workspace) not in result
-        assert "src/main.py" in result
-
-    def test_empty_pattern(self, workspace: Path):
-        te = ToolExecutor(workspace=workspace)
-        result = te._search_files("")
-        assert "Error" in result
-
-    def test_count_cap(self, workspace: Path):
-        # Create 201 files
-        many = workspace / "many"
-        many.mkdir()
-        for i in range(201):
-            (many / f"file{i}.txt").write_text("")
-        te = ToolExecutor(workspace=workspace)
-        result = te._search_files("*.txt", path="many")
-        assert "200 result limit reached" in result
-        assert result.count(".txt") == 200
 
 
 class TestExecuteDispatch:
     @pytest.mark.asyncio
     async def test_unknown_tool(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te.execute("nonexistent", {})
+        result, _ui, *_ = await te.execute("nonexistent", {})
         assert "Unknown tool" in result
 
     @pytest.mark.asyncio
     async def test_routes_to_bash(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te.execute("bash", {"command": "echo dispatch_test"})
+        result, _ui, *_ = await te.execute("bash", {"command": "echo dispatch_test"})
         assert "dispatch_test" in result
 
     @pytest.mark.asyncio
     async def test_routes_to_read_file(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te.execute("read_file", {"path": "hello.py"})
+        result, _ui, *_ = await te.execute("read_file", {"path": "hello.py"})
         assert "print" in result
 
     @pytest.mark.asyncio
     async def test_error_handling(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te.execute("read_file", {"path": "../../escape"})
+        result, _ui, *_ = await te.execute("read_file", {"path": "../../escape"})
         assert "Error" in result
 
 
@@ -458,19 +512,19 @@ def _make_mock_client(html: str, status: int = 200):
 class TestFetchWebpage:
     async def test_rejects_ftp_scheme(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te._fetch_webpage("ftp://example.com/file.txt")
+        result, *_ = await te._fetch_webpage("ftp://example.com/file.txt")
         assert "Error" in result
         assert "scheme" in result
 
     async def test_rejects_file_scheme(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te._fetch_webpage("file:///etc/passwd")
+        result, *_ = await te._fetch_webpage("file:///etc/passwd")
         assert "Error" in result
         assert "scheme" in result
 
     async def test_rejects_empty_url(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        result = await te._fetch_webpage("")
+        result, *_ = await te._fetch_webpage("")
         assert "Error" in result
 
     async def test_timeout_error(self, workspace: Path):
@@ -478,7 +532,7 @@ class TestFetchWebpage:
         mock_client, mock_instance, _ = _make_mock_client("")
         mock_instance.get.side_effect = httpx.TimeoutException("timed out")
         with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
-            result = await te._fetch_webpage("https://example.com")
+            result, *_ = await te._fetch_webpage("https://example.com")
         assert "Error" in result
         assert "timed out" in result
 
@@ -491,7 +545,7 @@ class TestFetchWebpage:
             "not found", request=MagicMock(), response=mock_resp
         )
         with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
-            result = await te._fetch_webpage("https://example.com/gone")
+            result, *_ = await te._fetch_webpage("https://example.com/gone")
         assert "Error" in result
         assert "404" in result
 
@@ -500,7 +554,7 @@ class TestFetchWebpage:
         mock_client, mock_instance, _ = _make_mock_client("")
         mock_instance.get.side_effect = httpx.ConnectError("connection refused")
         with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
-            result = await te._fetch_webpage("https://unreachable.invalid")
+            result, *_ = await te._fetch_webpage("https://unreachable.invalid")
         assert "Error" in result
         assert "ConnectError" in result
 
@@ -510,7 +564,7 @@ class TestFetchWebpage:
         mock_client, _, _ = _make_mock_client(html)
         with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
             with patch("trafilatura.extract", return_value="Hello world article text."):
-                result = await te._fetch_webpage("https://example.com")
+                result, *_ = await te._fetch_webpage("https://example.com")
         assert "Hello world article text." in result
 
     async def test_clips_to_max_chars(self, workspace: Path):
@@ -519,7 +573,7 @@ class TestFetchWebpage:
         mock_client, _, _ = _make_mock_client("<html><body>" + long_text + "</body></html>")
         with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
             with patch("trafilatura.extract", return_value=long_text):
-                result = await te._fetch_webpage("https://example.com")
+                result, *_ = await te._fetch_webpage("https://example.com")
         assert "truncated" in result
         assert len(result) < len(long_text)
 
@@ -529,7 +583,7 @@ class TestFetchWebpage:
         mock_client, _, _ = _make_mock_client(html)
         with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
             with patch("trafilatura.extract", return_value=None):
-                result = await te._fetch_webpage("https://example.com")
+                result, *_ = await te._fetch_webpage("https://example.com")
         assert "Plain fallback text" in result
 
     async def test_missing_trafilatura_returns_error(self, workspace: Path):
@@ -538,14 +592,14 @@ class TestFetchWebpage:
         mock_client, _, _ = _make_mock_client(html)
         with patch("nanoharness.tools.httpx.AsyncClient", return_value=mock_client):
             with patch.dict(sys.modules, {"trafilatura": None}):
-                result = await te._fetch_webpage("https://example.com")
+                result, *_ = await te._fetch_webpage("https://example.com")
         assert "Error" in result
         assert "trafilatura" in result
 
     async def test_dispatch_routes_fetch_webpage(self, workspace: Path):
         te = ToolExecutor(workspace=workspace)
-        with patch.object(te, "_fetch_webpage", return_value="mocked result") as mock_fn:
-            result = await te.execute("fetch_webpage", {"url": "https://example.com"})
+        with patch.object(te, "_fetch_webpage", return_value=("mocked result", 0, 0)) as mock_fn:
+            result, _ui, *_ = await te.execute("fetch_webpage", {"url": "https://example.com"})
         mock_fn.assert_called_once_with("https://example.com")
         assert result == "mocked result"
 

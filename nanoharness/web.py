@@ -381,6 +381,19 @@ function scrollBottom() {
   chat.scrollTop = chat.scrollHeight;
 }
 
+function countLines(s) {
+  if (!s) return 0;
+  return (s.match(/\n/g) || []).length + (s.endsWith('\n') ? 0 : 1);
+}
+
+function buildUiNotice(uiShown, uiClipped, modelShown, linesTotal) {
+  if (modelShown === 0 && linesTotal === 0) return '';
+  if (modelShown > 0 && linesTotal > 0 && modelShown < linesTotal)
+    return uiClipped ? '[' + uiShown + ' lines shown \xb7 model: ' + modelShown + '/' + linesTotal + ']' : '';
+  const n = linesTotal > 0 ? linesTotal : modelShown;
+  return uiClipped ? '[' + uiShown + '/' + n + ' lines shown \xb7 model: all]' : '[' + n + ' lines \xb7 all]';
+}
+
 function autoResize() {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 200) + 'px';
@@ -489,17 +502,29 @@ function handleEvent(ev) {
       scrollBottom();
       break;
 
-    case 'tool_result':
+    case 'tool_result': {
       hideSpinner();
       const tr = document.createElement('div');
       tr.className = 'tool-result';
-      let preview = ev.text || '';
-      if (preview.length > 500) preview = preview.slice(0, 500) + '...';
-      tr.textContent = preview;
+      const UI_LIMIT = 500;
+      const raw = ev.text || '';
+      let display;
+      if (raw.length <= UI_LIMIT) {
+        const notice = buildUiNotice(countLines(raw), false, ev.lines_shown || 0, ev.lines_total || 0);
+        display = raw + (notice ? '\n' + notice : '');
+      } else {
+        let cut = raw.lastIndexOf('\n', UI_LIMIT);
+        if (cut === -1) cut = UI_LIMIT;
+        const preview = raw.slice(0, cut);
+        const notice = buildUiNotice(countLines(preview), true, ev.lines_shown || 0, ev.lines_total || 0);
+        display = preview + (notice ? '\n' + notice : '');
+      }
+      tr.textContent = display;
       chat.appendChild(tr);
       showSpinner(thinkingEnabled ? 'Thinking' : 'Processing');
       scrollBottom();
       break;
+    }
 
     case 'progress':
       if (!progressEl) {

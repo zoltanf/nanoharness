@@ -61,6 +61,8 @@ class StreamEvent:
     tool_name: str = ""
     tool_args: dict = field(default_factory=dict)
     tool_id: str = ""
+    lines_shown: int = 0    # lines visible in model's copy of tool output; 0 = not applicable
+    lines_total: int = 0    # total lines before backend truncation; 0 = unknown or n/a
 
     def to_dict(self) -> dict:
         d: dict = {"type": self.type, "text": self.text}
@@ -70,6 +72,10 @@ class StreamEvent:
             d["tool_args"] = self.tool_args
         if self.tool_id:
             d["tool_id"] = self.tool_id
+        if self.lines_shown > 0:
+            d["lines_shown"] = self.lines_shown
+        if self.lines_total > 0:
+            d["lines_total"] = self.lines_total
         return d
 
 
@@ -194,13 +200,16 @@ class Agent:
                     yield StreamEvent(type="_prompt_eval_count", text=str(chunk.prompt_eval_count))
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             log.log_error("stream_response", e)
-            yield StreamEvent(type="error", text=f"Ollama connection refused: {e}")
+            detail = str(e) or type(e).__name__
+            yield StreamEvent(type="error", text=f"Ollama connection refused: {detail}")
         except (httpx.RemoteProtocolError, httpx.ReadError) as e:
             log.log_error("stream_response", e)
-            yield StreamEvent(type="error", text=f"Ollama connection lost mid-stream: {e}")
+            detail = str(e) or type(e).__name__
+            yield StreamEvent(type="error", text=f"Ollama connection lost mid-stream: {detail}")
         except Exception as e:
             log.log_error("stream_response", e)
-            yield StreamEvent(type="error", text=f"Ollama error: {e}")
+            detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            yield StreamEvent(type="error", text=f"Ollama error: {detail}")
 
     async def _fallback_code_execution(
         self, content: str
@@ -220,11 +229,12 @@ class Agent:
                 )
                 log.log_tool_exec_start("bash_fallback", {"command": code}, "fallback")
                 t0 = time.monotonic()
-                result = await self.tools.execute("bash", {"command": code})
+                model_text, ui_text, lines_shown, lines_total = await self.tools.execute("bash", {"command": code})
                 duration = time.monotonic() - t0
-                log.log_tool_exec_end("bash_fallback", "fallback", result, duration)
+                log.log_tool_exec_end("bash_fallback", "fallback", model_text, duration)
 
-                yield StreamEvent(type="tool_result", text=result, tool_name="bash")
+                yield StreamEvent(type="tool_result", text=ui_text, tool_name="bash",
+                                  lines_shown=lines_shown, lines_total=lines_total)
 
                 # Add to history so the model sees the result
                 self.history.append({
@@ -233,7 +243,7 @@ class Agent:
                 })
                 self.history.append({
                     "role": "user",
-                    "content": f"Command output:\n{result}",
+                    "content": f"Command output:\n{model_text}",
                 })
 
             elif lang in ("python", "py"):
@@ -244,11 +254,12 @@ class Agent:
                 )
                 log.log_tool_exec_start("python_fallback", {"code": code[:100]}, "fallback")
                 t0 = time.monotonic()
-                result = await self.tools.execute("python_exec", {"code": code})
+                model_text, ui_text, lines_shown, lines_total = await self.tools.execute("python_exec", {"code": code})
                 duration = time.monotonic() - t0
-                log.log_tool_exec_end("python_fallback", "fallback", result, duration)
+                log.log_tool_exec_end("python_fallback", "fallback", model_text, duration)
 
-                yield StreamEvent(type="tool_result", text=result, tool_name="python_exec")
+                yield StreamEvent(type="tool_result", text=ui_text, tool_name="python_exec",
+                                  lines_shown=lines_shown, lines_total=lines_total)
 
                 self.history.append({
                     "role": "assistant",
@@ -256,7 +267,7 @@ class Agent:
                 })
                 self.history.append({
                     "role": "user",
-                    "content": f"Code output:\n{result}",
+                    "content": f"Code output:\n{model_text}",
                 })
 
     async def _info_command(self) -> AsyncIterator[StreamEvent]:
@@ -431,7 +442,8 @@ class Agent:
         try:
             success = pull_task.result()
         except Exception as e:
-            yield StreamEvent(type="error", text=f"Pull failed: {e}")
+            detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            yield StreamEvent(type="error", text=f"Pull failed: {detail}")
             yield StreamEvent(type="done")
             return
 
@@ -446,7 +458,8 @@ class Agent:
         try:
             models = await self.client.list_models()
         except Exception as e:
-            yield StreamEvent(type="error", text=f"Failed to list models: {e}")
+            detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            yield StreamEvent(type="error", text=f"Failed to list models: {detail}")
             yield StreamEvent(type="done")
             return
 
@@ -653,11 +666,25 @@ class Agent:
                 yield StreamEvent(type="content", text=self._system_prompt())
                 yield StreamEvent(type="done")
             elif subcmd == "tools":
-                lines = ["Available tools:"]
+                from rich.markup import escape as mesc
+                name_w = max(len(t["function"]["name"]) for t in TOOL_SCHEMAS)
+                sep = "─" * (name_w + 48)
+                lines = [f"[bold cyan]Tools[/]", f"[dim]{sep}[/]"]
                 for t in TOOL_SCHEMAS:
                     fn = t["function"]
-                    lines.append(f"  {fn['name']:<14} {fn['description']}")
-                yield StreamEvent(type="content", text="\n".join(lines))
+                    name = fn["name"]
+                    params = fn.get("parameters", {})
+                    props = list(params.get("properties", {}).keys())
+                    req = set(params.get("required", []))
+                    lines.append(f"[bold]{mesc(name):<{name_w}}[/]  {mesc(fn['description'])}")
+                    if props:
+                        req_parts = [p for p in props if p in req]
+                        opt_parts = [p for p in props if p not in req]
+                        param_str = "  ".join(req_parts)
+                        if opt_parts:
+                            param_str += ("  " if req_parts else "") + f"[{', '.join(opt_parts)}]"
+                        lines.append(f"{'':>{name_w + 2}}[dim italic]{mesc(param_str)}[/]")
+                yield StreamEvent(type="markup", text="\n".join(lines))
                 yield StreamEvent(type="done")
             else:
                 async for ev in self._info_command():
@@ -678,9 +705,10 @@ class Agent:
                     tool_args={"command": shell_cmd},
                 )
                 t0 = time.monotonic()
-                shell_result = await self.tools.execute("bash", {"command": shell_cmd}, confirm=False)
-                log.log_tool_exec_end("bash_shell", "shell", shell_result, time.monotonic() - t0)
-                yield StreamEvent(type="tool_result", text=shell_result, tool_name="bash")
+                shell_model, shell_ui, lines_shown, lines_total = await self.tools.execute("bash", {"command": shell_cmd}, confirm=False)
+                log.log_tool_exec_end("bash_shell", "shell", shell_model, time.monotonic() - t0)
+                yield StreamEvent(type="tool_result", text=shell_ui, tool_name="bash",
+                                  lines_shown=lines_shown, lines_total=lines_total)
                 yield StreamEvent(type="done")
                 return
 
@@ -870,7 +898,7 @@ class Agent:
                 )
 
             # Execute all tools in parallel
-            async def _run_tool(tc: dict) -> tuple[str, str, str, dict]:
+            async def _run_tool(tc: dict) -> tuple[str, str, str, str, dict, int, int]:
                 func = tc.get("function", {})
                 name = func.get("name", "")
                 args = func.get("arguments", {})
@@ -880,30 +908,33 @@ class Agent:
                 t0 = time.monotonic()
 
                 try:
-                    result = await self.tools.execute(name, args)
+                    model_text, ui_text, lines_shown, lines_total = await self.tools.execute(name, args)
                 except Exception as e:
                     log.log_error(f"tool_exec_{name}", e)
-                    result = f"Error: {type(e).__name__}: {e}"
+                    model_text = ui_text = f"Error: {type(e).__name__}: {e}"
+                    lines_shown, lines_total = 0, 0
 
                 duration = time.monotonic() - t0
-                log.log_tool_exec_end(name, call_id, result, duration)
-                return call_id, name, result, args
+                log.log_tool_exec_end(name, call_id, model_text, duration)
+                return call_id, name, model_text, ui_text, args, lines_shown, lines_total
 
             tasks = [_run_tool(tc) for tc in tool_calls]
             results = await asyncio.gather(*tasks)
 
             # Add tool results to history and yield events
-            for call_id, name, result, args in results:
+            for call_id, name, model_text, ui_text, args, lines_shown, lines_total in results:
                 self.history.append({
                     "role": "tool",
-                    "content": result,
+                    "content": model_text,
                     "tool_call_id": call_id,
                 })
                 yield StreamEvent(
                     type="tool_result",
-                    text=result,
+                    text=ui_text,
                     tool_name=name,
                     tool_id=call_id,
+                    lines_shown=lines_shown,
+                    lines_total=lines_total,
                 )
 
             log.log_event("tool_loop_continue", f"tool_results={len(results)}, continuing agent loop")
