@@ -58,9 +58,13 @@ The central async loop: user input → build messages (system + truncated histor
 
 Precedence (highest to lowest): CLI args → env vars (`NANO_*`) → TOML (`~/.nanoharness/config.toml`) → dataclass defaults. Key config: `model.name`, `model.thinking`, `agent.max_steps`, `safety.level` (`"workspace"` / `"confirm"` / `"none"`).
 
+**Tool enable/disable**: `ToolsConfig` dataclass (one `bool` field per tool, all default `True`) is stored under `config.tools` and serialized as a `[tools]` TOML section. `TOOL_NAMES` lists the canonical names. Workspace overrides live in `<workspace>/.nanoharness/tools.json` (only explicitly-set values; absent = inherit global).
+
 ### Tool Execution (`tools.py`)
 
-`ToolExecutor` dispatches to: `bash`, `read_file`, `write_file`, `list_dir`, `python_exec`, `todo`, `fetch_webpage`. All file operations go through `_safe_path()` which enforces workspace containment unless `safety="unrestricted"`. `fetch_webpage` uses `httpx` for fetching and `trafilatura` (lazy import, requires `web-reader` extra) for content extraction. Output clipped to `max_output_chars`.
+`ToolExecutor` dispatches to: `bash`, `read_file`, `write_file`, `list_files`, `python_exec`, `todo`, `fetch_webpage`. All file operations go through `_safe_path()` which enforces workspace containment unless `safety="unrestricted"`. `fetch_webpage` uses `httpx` for fetching and `trafilatura` (lazy import, requires `web-reader` extra) for content extraction. Output clipped to `max_output_chars`.
+
+**Tool filtering**: `enabled_schemas(tools_config)` merges global (`ToolsConfig`) and workspace (`tools.json`) state — workspace wins, absent = inherit — and returns the filtered subset of `TOOL_SCHEMAS`. Disabled tools are excluded from every LLM call (saves tokens; model can't attempt them). The workspace override dict is cached in `_ws_tools_cache` and invalidated on `_save_workspace_tools()`. The `todo` tool filtered out here does not affect `/todo` slash commands or the status bar (those bypass the LLM tool schema).
 
 ### Web UI (`web.py`)
 
@@ -70,11 +74,13 @@ Inline HTML/JS/CSS template (no build toolchain). WebSocket primary transport wi
 
 Textual app using `VerticalScroll` with dynamically mounted `Static` widgets. Streaming content updates a widget in-place via `widget.update()`, then swaps to rendered Markdown on completion. `CompletingInput` provides tab completion, `HintLine` shows inline command hints.
 
+**`ToolsModal`**: `ModalScreen` launched when user types `/config tools` (bare). Keyboard: ↑↓ navigate rows (tools), ←→ switch columns (global / workspace), Space cycles states (workspace: `None→True→False→None`; global: `True↔False`). Escape saves and closes — writes `ToolsConfig` fields back to `config.toml` via `write_config_toml` and workspace overrides to `tools.json` via `_save_workspace_tools`.
+
 ### Completion System (`completion.py`)
 
 Shared by REPL and TUI: `complete_line()` for context-aware tab completion, `hint_for_input()` for inline hints, `is_incomplete_command()` to block sending partial command prefixes. Web UI reimplements these in JS.
 
-`complete_line` handles full-line replacements for `/workspace`, `/think`, `/update`, and `/config` (subcommand/arg completion). The fallback token path returns `[]` immediately when the input ends with a trailing space to avoid spurious path completions. `_do_tab_complete` in `tui.py` maintains a matching list of "full-line" command prefixes so that the prefix calculation does not double-prepend when cycling through suggestions.
+`complete_line` handles full-line replacements for `/workspace`, `/think`, `/update`, `/info`, and `/config` (subcommand/arg completion including `/config tools <tool> [global] [workspace]`). A `trailing` flag (whether `rest != rest.rstrip()`) disambiguates "still typing a token" from "committed and need next level". The fallback token path returns `[]` immediately when the input ends with a trailing space to avoid spurious path completions. `_do_tab_complete` in `tui.py` maintains a matching list of "full-line" command prefixes so that the prefix calculation does not double-prepend when cycling through suggestions.
 
 ### Startup Checks (`startup.py`)
 
@@ -94,7 +100,8 @@ After starting, polls `check_health()` with exponential back-off for up to 15 s.
 
 ## Key Patterns
 
-- Commands (`/think`, `/workspace`, etc.) are handled by `CommandHandler` before reaching the agent loop
+- Commands (`/think`, `/workspace`, `/config tools`, etc.) are handled by `CommandHandler` before reaching the agent loop
+- **`/config tools`**: bare form → TUI opens `ToolsModal`; in REPL/web it lists current state as text. `/config tools <tool> [g] [w]` sets global and/or workspace value (`_` skips a column; workspace also accepts `inherit` to remove an override). Global changes are written to `~/.nanoharness/config.toml`; workspace changes to `<workspace>/.nanoharness/tools.json`
 - `/think once` is stateful: sets thinking on for one turn, then `consume_think_once()` resets it at all exit points in `process_input()`
 - Ollama communication uses raw `httpx` (no SDK) against `/api/chat` with NDJSON streaming
 - The agent maintains `history` (list of message dicts) with token-budget truncation (~200k tokens)

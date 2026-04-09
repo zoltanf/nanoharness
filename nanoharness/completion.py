@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .config import CONFIG_KEYS  # noqa: F401 — re-exported for callers
+from .config import CONFIG_KEYS, TOOL_NAMES  # noqa: F401 — re-exported for callers
 
 COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/pull", "/update", "/todo", "/help", "/quit", "/exit", "/safety"]
 
@@ -111,7 +111,7 @@ COMMAND_HINTS: dict[str, tuple[str, str]] = {
     "/code":      ("",                          "Open workspace in VS Code"),
     "/lazygit":   ("",                          "Open lazygit in a new terminal window"),
     "/clear":     ("",                          "Clear conversation history"),
-    "/config":    ("[set KEY VAL]",             "Show/edit configuration"),
+    "/config":    ("[tools | set KEY VAL]",       "Show/edit config or tool enables"),
     "/info":      ("[prompt|tools]",             "Show model info, system prompt, or available tools"),
     "/pull":      ("[model|all]",                "Pull a model; 'all' pulls every local model"),
     "/update":    ("ollama|models",             "Update Ollama binary or pull all local models"),
@@ -193,11 +193,22 @@ def hint_for_input(line: str) -> str:
         # /workspace with partial path — don't show hint, real dirs are better
         if cmd_part == "/workspace" and arg_part:
             return ""
-        # /config set <key> — show key list or value hint
+        # /config set <key> or /config tools — show hints
         if cmd_part == "/config":
-            sub_parts = arg_part.split(maxsplit=1)
-            if not sub_parts or not "set".startswith(sub_parts[0]):
-                return "/config set <key> <value>  Edit configuration"
+            sub_parts = arg_part.split()
+            first_sub = sub_parts[0] if sub_parts else ""
+            # /config tools ...
+            if "tools".startswith(first_sub) and first_sub not in ("set",):
+                if len(sub_parts) <= 1:
+                    return "/config tools [<tool> [global] [workspace]]  Configure tool access"
+                if len(sub_parts) == 2:
+                    return "/config tools <tool> on|off|_  (global; _ = keep current)"
+                if len(sub_parts) == 3:
+                    return f"/config tools <tool> {sub_parts[2]} on|off|inherit|_  (workspace)"
+                return ""
+            # /config set ...
+            if not sub_parts or not "set".startswith(first_sub):
+                return "/config tools | set <key> <value>  Show/edit config or tool enables"
             if len(sub_parts) == 1 and sub_parts[0] == "set":
                 return f"/config set {' | '.join(CONFIG_KEYS)}"
             if len(sub_parts) == 2:
@@ -357,18 +368,55 @@ def complete_line(workspace: Path, line: str) -> list[str]:
         partial = stripped[len("/info "):].lstrip().lower()
         return [f"/info {o}" for o in _INFO_SUBCMDS if o.startswith(partial)]
 
-    # /config set <key> [value] — complete keys and enum values
+    # /config set|tools — complete subcommands, keys, tool names, and values
     if stripped.lower().startswith("/config "):
         rest = stripped[len("/config "):].lstrip()
-        rest_parts = rest.split(maxsplit=2)
-        if not rest_parts or not "set".startswith(rest_parts[0].lower()):
+        trailing = rest != rest.rstrip()  # user typed a space after the last token
+        rest_parts = rest.split(maxsplit=3)
+        first = rest_parts[0].lower() if rest_parts else ""
+
+        # /config tools [<tool> [global] [workspace]]
+        if "tools".startswith(first) and first not in ("set",):
+            if first != "tools" or (len(rest_parts) == 1 and not trailing):
+                # Still typing "tools" prefix — offer set/tools candidates
+                candidates = []
+                if "set".startswith(first):
+                    candidates.append("/config set")
+                if "tools".startswith(first):
+                    candidates.append("/config tools")
+                return candidates
+            # first == "tools"; user has typed a space → complete next token
+            if len(rest_parts) == 1:
+                return [f"/config tools {n}" for n in TOOL_NAMES]
+            tool_partial = rest_parts[1].lower()
+            matching_tools = [n for n in TOOL_NAMES if n.startswith(tool_partial)]
+            if len(rest_parts) == 2 and not trailing:
+                return [f"/config tools {n}" for n in matching_tools]
+            tool = rest_parts[1]
+            if len(rest_parts) == 2:
+                return [f"/config tools {tool} {v}" for v in ("on", "off", "_")]
+            g_partial = rest_parts[2].lower()
+            if len(rest_parts) == 3 and not trailing:
+                return [f"/config tools {tool} {v}" for v in ("on", "off", "_") if v.startswith(g_partial)]
+            g_val = rest_parts[2]
+            if len(rest_parts) == 3:
+                return [f"/config tools {tool} {g_val} {v}" for v in ("on", "off", "inherit")]
+            w_partial = rest_parts[3].lower()
+            return [f"/config tools {tool} {g_val} {v}" for v in ("on", "off", "inherit") if v.startswith(w_partial)]
+
+        # /config set <key> [value]
+        if not rest_parts or not "set".startswith(first):
+            return ["/config set", "/config tools"]
+        if len(rest_parts) == 1 and not trailing:
             return ["/config set"]
         if len(rest_parts) == 1:
             return [f"/config set {k}" for k in CONFIG_KEYS]
         key_partial = rest_parts[1].lower() if len(rest_parts) >= 2 else ""
         matching_keys = [k for k in CONFIG_KEYS if k.startswith(key_partial)]
-        if len(rest_parts) == 2:
+        if len(rest_parts) == 2 and not trailing:
             return [f"/config set {k}" for k in matching_keys]
+        if len(rest_parts) == 2:
+            return [f"/config set {k}" for k in CONFIG_KEYS]
         key = rest_parts[1].lower()
         val_partial = rest_parts[2].lower() if len(rest_parts) > 2 else ""
         if key == "model.thinking":

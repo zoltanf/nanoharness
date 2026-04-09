@@ -791,7 +791,7 @@ const COMMAND_HINTS = {
   '/code':      ['',                          'Open workspace in VS Code'],
   '/lazygit':   ['',                          'Open lazygit in a new terminal window'],
   '/clear':     ['',                          'Clear conversation history'],
-  '/config':    ['[set KEY VAL]',             'Show or edit configuration'],
+  '/config':    ['[tools | set KEY VAL]',      'Show/edit config or tool enables'],
   '/info':      ['[prompt|tools]',             'Show model info, system prompt, or available tools'],
   '/pull':      ['[model|all]',               "Pull a model; 'all' pulls every local model"],
   '/update':    ['ollama|models',             'Update Ollama binary or pull all local models'],
@@ -805,6 +805,7 @@ const THINK_OPTIONS = ['on', 'off', 'once'];
 const SAFETY_OPTIONS = ['confirm', 'workspace', 'none'];
 const UPDATE_OPTIONS = ['ollama', 'models'];
 const INFO_OPTIONS = ['prompt', 'tools'];
+const TOOL_NAMES = ['bash', 'read_file', 'write_file', 'list_files', 'python_exec', 'todo', 'fetch_webpage'];
 
 function getHint(line) {
   const s = line.trimStart();
@@ -848,6 +849,17 @@ function getHint(line) {
     if (cmdPart === '/info' && argPart) {
       const opts = INFO_OPTIONS.filter(o => o.startsWith(argPart));
       return opts.length ? '/info ' + opts.join(' | ') : '';
+    }
+    if (cmdPart === '/config') {
+      const subParts = argPart.split(/\s+/).filter(Boolean);
+      const firstSub = subParts[0] || '';
+      if ('tools'.startsWith(firstSub) && firstSub !== 'set') {
+        if (subParts.length <= 1) return '/config tools [<tool> [global] [workspace]]  Configure tool access';
+        if (subParts.length === 2) return '/config tools <tool> on|off|_  (global; _ = keep)';
+        if (subParts.length === 3) return `/config tools <tool> ${subParts[2]} on|off|inherit|_  (workspace)`;
+        return '';
+      }
+      return desc ? cmdPart + ' ' + argH + '  ' + desc : cmdPart + ' ' + argH;
     }
     if (cmdPart === '/workspace' && argPart) return '';
     return desc ? cmdPart + ' ' + argH + '  ' + desc : cmdPart + ' ' + argH;
@@ -895,6 +907,20 @@ function getCompletions(line) {
   if (s.startsWith('/info ')) {
     const partial = s.slice(6).trimStart();
     return INFO_OPTIONS.filter(o => o.startsWith(partial)).map(o => '/info ' + o);
+  }
+  // /config tools|set ...
+  if (s.startsWith('/config ')) {
+    const rest = s.slice(8).trimStart();
+    const rp = rest.split(/\s+/).filter(Boolean);
+    const first = rp[0] || '';
+    if ('tools'.startsWith(first) && first !== 'set') {
+      if (rp.length === 0) return ['/config set', '/config tools'];
+      if (rp.length === 1) return ['tools', 'set'].filter(x => x.startsWith(first)).map(x => '/config ' + x);
+      if (rp.length === 2) return TOOL_NAMES.filter(n => n.startsWith(rp[1])).map(n => `/config tools ${n}`);
+      if (rp.length === 3) return ['on', 'off', '_'].filter(v => v.startsWith(rp[2])).map(v => `/config tools ${rp[1]} ${v}`);
+      if (rp.length === 4) return ['on', 'off', 'inherit'].filter(v => v.startsWith(rp[3])).map(v => `/config tools ${rp[1]} ${rp[2]} ${v}`);
+    }
+    return [];
   }
   // bare /command prefix
   if (s.startsWith('/') && !s.includes(' ')) {

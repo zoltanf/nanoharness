@@ -618,3 +618,109 @@ class TestFetchWebpage:
             with patch("trafilatura.extract", return_value="ok"):
                 await te.execute("fetch_webpage", {"url": "https://example.com"})
         assert not called
+
+
+class TestWorkspaceTools:
+    def test_load_missing_file_returns_empty(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        assert te._load_workspace_tools() == {}
+
+    def test_save_and_load_roundtrip(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        te._save_workspace_tools({"bash": False, "python_exec": True})
+        result = te._load_workspace_tools()
+        assert result == {"bash": False, "python_exec": True}
+
+    def test_save_skips_none_values(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        te._save_workspace_tools({"bash": False, "python_exec": None, "todo": True})
+        result = te._load_workspace_tools()
+        assert "python_exec" not in result
+        assert result == {"bash": False, "todo": True}
+
+    def test_save_creates_parent_dir(self, tmp_path: Path):
+        ws = tmp_path / "newproject"
+        ws.mkdir()
+        te = ToolExecutor(workspace=ws)
+        te._save_workspace_tools({"bash": False})
+        assert (ws / ".nanoharness" / "tools.json").is_file()
+
+    def test_load_caches_result(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        te._save_workspace_tools({"bash": False})
+        first = te._load_workspace_tools()
+        # Write directly to file, bypassing _save — cache should still return old value
+        te._tools_file.write_text('{"bash": true}')
+        second = te._load_workspace_tools()
+        assert first is second  # same dict object from cache
+
+    def test_save_invalidates_cache(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        te._save_workspace_tools({"bash": False})
+        assert te._load_workspace_tools()["bash"] is False
+        te._save_workspace_tools({"bash": True})
+        assert te._load_workspace_tools()["bash"] is True
+
+    def test_load_corrupt_file_returns_empty(self, workspace: Path):
+        te = ToolExecutor(workspace=workspace)
+        (workspace / ".nanoharness").mkdir(exist_ok=True)
+        te._tools_file.write_text("not valid json{{{")
+        assert te._load_workspace_tools() == {}
+
+
+class TestEnabledSchemas:
+    from nanoharness.config import ToolsConfig
+
+    def test_all_enabled_by_default(self, workspace: Path):
+        from nanoharness.config import ToolsConfig
+        from nanoharness.tools import TOOL_SCHEMAS
+        te = ToolExecutor(workspace=workspace)
+        schemas = te.enabled_schemas(ToolsConfig())
+        assert schemas == TOOL_SCHEMAS
+
+    def test_global_disable_removes_schema(self, workspace: Path):
+        from nanoharness.config import ToolsConfig
+        cfg = ToolsConfig()
+        cfg.bash = False
+        te = ToolExecutor(workspace=workspace)
+        schemas = te.enabled_schemas(cfg)
+        names = [s["function"]["name"] for s in schemas]
+        assert "bash" not in names
+        assert "python_exec" in names
+
+    def test_workspace_override_disables(self, workspace: Path):
+        from nanoharness.config import ToolsConfig
+        te = ToolExecutor(workspace=workspace)
+        te._save_workspace_tools({"python_exec": False})
+        schemas = te.enabled_schemas(ToolsConfig())
+        names = [s["function"]["name"] for s in schemas]
+        assert "python_exec" not in names
+        assert "bash" in names
+
+    def test_workspace_override_enables_globally_disabled(self, workspace: Path):
+        from nanoharness.config import ToolsConfig
+        cfg = ToolsConfig()
+        cfg.bash = False
+        te = ToolExecutor(workspace=workspace)
+        te._save_workspace_tools({"bash": True})
+        schemas = te.enabled_schemas(cfg)
+        names = [s["function"]["name"] for s in schemas]
+        assert "bash" in names
+
+    def test_workspace_inherits_global(self, workspace: Path):
+        from nanoharness.config import ToolsConfig
+        cfg = ToolsConfig()
+        cfg.fetch_webpage = False
+        te = ToolExecutor(workspace=workspace)
+        # No workspace override for fetch_webpage — inherits global
+        schemas = te.enabled_schemas(cfg)
+        names = [s["function"]["name"] for s in schemas]
+        assert "fetch_webpage" not in names
+
+    def test_disable_all(self, workspace: Path):
+        from nanoharness.config import ToolsConfig
+        cfg = ToolsConfig()
+        for name in ["bash", "read_file", "write_file", "list_files", "python_exec", "todo", "fetch_webpage"]:
+            setattr(cfg, name, False)
+        te = ToolExecutor(workspace=workspace)
+        assert te.enabled_schemas(cfg) == []

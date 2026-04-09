@@ -22,6 +22,8 @@ CONFIG_KEYS = [
     "ollama.base_url",
 ]
 
+TOOL_NAMES = ["bash", "read_file", "write_file", "list_files", "python_exec", "todo", "fetch_webpage"]
+
 WARN_SAFETY_NONE = (
     "WARNING: safety=none — workspace containment and environment scrubbing are "
     "disabled. The agent can read/write any file and run unrestricted commands."
@@ -64,12 +66,24 @@ class WebConfig:
 
 
 @dataclass
+class ToolsConfig:
+    bash: bool = True
+    read_file: bool = True
+    write_file: bool = True
+    list_files: bool = True
+    python_exec: bool = True
+    todo: bool = True
+    fetch_webpage: bool = True
+
+
+@dataclass
 class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
     workspace: Path = field(default_factory=Path.cwd)
     debug: bool = False
 
@@ -111,6 +125,11 @@ def _apply_toml(cfg: Config, data: dict) -> None:
         cfg.web.port = int(w["port"])
     if "host" in w:
         cfg.web.host = w["host"]
+
+    t = data.get("tools", {})
+    for name in TOOL_NAMES:
+        if name in t:
+            setattr(cfg.tools, name, bool(t[name]))
 
 
 def _apply_env(cfg: Config) -> None:
@@ -198,6 +217,9 @@ def write_config_toml(cfg: Config, path: Path = CONFIG_FILE) -> None:
         "",
         "[safety]",
         f'level = "{cfg.safety.level}"',
+        "",
+        "[tools]",
+        *[f"{name} = {str(getattr(cfg.tools, name)).lower()}" for name in TOOL_NAMES],
         "",
     ]
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -22,7 +22,7 @@ from rich.markdown import Markdown
 from .completion import complete_line, hint_for_input, is_incomplete_command, command_send_error
 from .tools import format_confirm_preview, _count_lines
 from . import logging as dbg, BANNER as _BANNER, __version__
-from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON
+from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON, TOOL_NAMES, write_config_toml
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -380,6 +380,123 @@ class ConfirmModal(ModalScreen):
         self.app.pop_screen()
 
 
+class ToolsModal(ModalScreen):
+    """Interactive per-tool enable/disable editor."""
+
+    CSS = """
+    ToolsModal {
+        align: center middle;
+    }
+    #tools-box {
+        width: 56;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    BINDINGS = [
+        Binding("up",    "move_up",    show=False),
+        Binding("down",  "move_down",  show=False),
+        Binding("left",  "move_left",  show=False),
+        Binding("right", "move_right", show=False),
+        Binding("space", "toggle",     show=False),
+        Binding("escape","close",      show=False),
+    ]
+
+    def __init__(self, agent: "Agent") -> None:
+        super().__init__()
+        self._agent = agent
+        cfg = agent.config.tools
+        self._global: dict[str, bool] = {n: getattr(cfg, n, True) for n in TOOL_NAMES}
+        ws = agent.tools._load_workspace_tools()
+        self._workspace: dict[str, bool | None] = {n: ws.get(n, None) for n in TOOL_NAMES}
+        self._row: int = 0
+        self._col: int = 0  # 0 = global, 1 = workspace
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="tools-box"):
+            yield Static(id="tools-content")
+
+    def on_mount(self) -> None:
+        self._render()
+
+    def _render(self) -> None:
+        lines: list[str] = [
+            "[bold cyan]Tool Configuration[/]",
+            "",
+            f"  [dim]{'Global':<8}  {'Workspace':<12}  Tool[/]",
+            f"  [dim]{'──────':<8}  {'─────────':<12}  ────────────────[/]",
+        ]
+        for i, name in enumerate(TOOL_NAMES):
+            g_val = self._global[name]
+            w_val = self._workspace[name]
+
+            g_str = "[green]✓[/]" if g_val else "[red]✗[/]"
+            if w_val is None:
+                w_str = "[dim]–[/]"
+            elif w_val:
+                w_str = "[green]✓[/]"
+            else:
+                w_str = "[red]✗[/]"
+
+            if i == self._row:
+                g_disp = f"[reverse]{g_str}[/]" if self._col == 0 else g_str
+                w_disp = f"[reverse]{w_str}[/]" if self._col == 1 else w_str
+                name_disp = f"[bold]{escape(name)}[/]"
+            else:
+                g_disp = g_str
+                w_disp = w_str
+                name_disp = escape(name)
+
+            lines.append(f"  {g_disp}        {w_disp}           {name_disp}")
+
+        lines += [
+            "",
+            "[dim]↑↓ row  ←→ col  Space toggle  Esc save & close[/]",
+        ]
+        self.query_one("#tools-content", Static).update(Text.from_markup("\n".join(lines)))
+
+    def action_move_up(self) -> None:
+        self._row = (self._row - 1) % len(TOOL_NAMES)
+        self._render()
+
+    def action_move_down(self) -> None:
+        self._row = (self._row + 1) % len(TOOL_NAMES)
+        self._render()
+
+    def action_move_left(self) -> None:
+        self._col = 0
+        self._render()
+
+    def action_move_right(self) -> None:
+        self._col = 1
+        self._render()
+
+    def action_toggle(self) -> None:
+        name = TOOL_NAMES[self._row]
+        if self._col == 0:
+            self._global[name] = not self._global[name]
+        else:
+            cur = self._workspace[name]
+            if cur is None:
+                self._workspace[name] = True
+            elif cur:
+                self._workspace[name] = False
+            else:
+                self._workspace[name] = None
+        self._render()
+
+    def action_close(self) -> None:
+        cfg = self._agent.config.tools
+        for name in TOOL_NAMES:
+            setattr(cfg, name, self._global[name])
+        write_config_toml(self._agent.config)
+        self._agent.tools._save_workspace_tools(self._workspace)
+        self.app.pop_screen()
+
+
 class NanoHarnessApp(App):
     CSS = """
     #chat-log {
@@ -501,6 +618,13 @@ class NanoHarnessApp(App):
             err = command_send_error(user_input)
             if err:
                 self.query_one(HintLine).set_hint(err)
+            return
+
+        # Intercept /config tools (bare) to show interactive modal
+        if user_input.lower() == "/config tools":
+            inp.load_text("")
+            self.query_one(HintLine).set_hint("")
+            self.push_screen(ToolsModal(self.agent))
             return
 
         inp.load_text("")

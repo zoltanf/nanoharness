@@ -20,8 +20,8 @@ from .tools import TOOL_SCHEMAS, ToolExecutor
 from .commands import CommandHandler
 from . import logging as log
 
-# Fixed overhead: tool schemas are sent on every LLM call but not included in
-# _build_messages. Pre-compute once so the token estimate can account for them.
+# Maximum possible overhead: all tool schemas sent on every LLM call.
+# Actual value is computed dynamically per-turn via enabled_schemas().
 _TOOL_SCHEMAS_CHARS: int = len(json.dumps(TOOL_SCHEMAS))
 
 
@@ -667,16 +667,20 @@ class Agent:
                 yield StreamEvent(type="done")
             elif subcmd == "tools":
                 from rich.markup import escape as mesc
+                active = self.tools.enabled_schemas(self.config.tools)
                 name_w = max(len(t["function"]["name"]) for t in TOOL_SCHEMAS)
                 sep = "─" * (name_w + 48)
                 lines = [f"[bold cyan]Tools[/]", f"[dim]{sep}[/]"]
+                active_names = {t["function"]["name"] for t in active}
                 for t in TOOL_SCHEMAS:
                     fn = t["function"]
                     name = fn["name"]
+                    enabled = name in active_names
                     params = fn.get("parameters", {})
                     props = list(params.get("properties", {}).keys())
                     req = set(params.get("required", []))
-                    lines.append(f"[bold]{mesc(name):<{name_w}}[/]  {mesc(fn['description'])}")
+                    status = "" if enabled else "  [dim red](disabled)[/]"
+                    lines.append(f"[bold]{mesc(name):<{name_w}}[/]  {mesc(fn['description'])}{status}")
                     if props:
                         req_parts = [p for p in props if p in req]
                         opt_parts = [p for p in props if p not in req]
@@ -765,11 +769,12 @@ class Agent:
                 return
 
             messages = self._build_messages()
+            active_tools = self.tools.enabled_schemas(self.config.tools)
             # Char-based token estimate: 4 chars ≈ 1 token. Include tool schema
             # chars since they are sent on every call but not counted by
             # _build_messages. This gives a realistic estimate even when KV-cache
             # causes Ollama's prompt_eval_count to report only the delta.
-            self.last_prompt_tokens = (self._last_build_chars + _TOOL_SCHEMAS_CHARS) // 4
+            self.last_prompt_tokens = (self._last_build_chars + len(json.dumps(active_tools))) // 4
 
             # Stream response from Ollama
             content_acc = ""
@@ -778,7 +783,7 @@ class Agent:
             eval_count = 0
             had_error = False
 
-            async for ev in self._stream_response(messages, tools=TOOL_SCHEMAS):
+            async for ev in self._stream_response(messages, tools=active_tools):
                 if ev.type == "content":
                     content_acc += ev.text
                     yield ev

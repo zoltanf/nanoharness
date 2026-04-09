@@ -310,3 +310,79 @@ class TestUnknownCommand:
     def test_unknown(self, handler: CommandHandler):
         r = handler.handle("/foo")
         assert "Unknown command" in r.output
+
+
+class TestConfigToolsCommand:
+    @pytest.fixture
+    def handler_with_tools(self, config: Config, workspace: Path) -> CommandHandler:
+        from nanoharness.tools import ToolExecutor
+        h = CommandHandler(config)
+        h.tools = ToolExecutor(workspace=workspace)
+        return h
+
+    def test_list_all_enabled(self, handler_with_tools: CommandHandler):
+        r = handler_with_tools.handle("/config tools")
+        assert "bash" in r.output
+        assert "python_exec" in r.output
+        assert "global" in r.output.lower() or "/" in r.output
+
+    def test_list_shows_inherit(self, handler_with_tools: CommandHandler):
+        r = handler_with_tools.handle("/config tools")
+        assert "inherit" in r.output
+
+    def test_list_shows_effective(self, handler_with_tools: CommandHandler):
+        r = handler_with_tools.handle("/config tools")
+        # All tools enabled by default, effective = on
+        assert "on" in r.output
+
+    def test_set_global_off(self, handler_with_tools: CommandHandler):
+        from unittest.mock import patch
+        with patch("nanoharness.config.write_config_toml"):
+            r = handler_with_tools.handle("/config tools bash off")
+        assert "Error" not in r.output
+        assert handler_with_tools.config.tools.bash is False
+
+    def test_set_global_on(self, handler_with_tools: CommandHandler):
+        handler_with_tools.config.tools.bash = False
+        from unittest.mock import patch
+        with patch("nanoharness.config.write_config_toml"):
+            r = handler_with_tools.handle("/config tools bash on")
+        assert handler_with_tools.config.tools.bash is True
+
+    def test_set_workspace_off(self, handler_with_tools: CommandHandler):
+        from unittest.mock import patch
+        with patch("nanoharness.config.write_config_toml"):
+            r = handler_with_tools.handle("/config tools python_exec _ off")
+        assert "Error" not in r.output
+        ws = handler_with_tools.tools._load_workspace_tools()
+        assert ws.get("python_exec") is False
+
+    def test_set_workspace_inherit_removes_override(self, handler_with_tools: CommandHandler):
+        handler_with_tools.tools._save_workspace_tools({"bash": False})
+        from unittest.mock import patch
+        with patch("nanoharness.config.write_config_toml"):
+            r = handler_with_tools.handle("/config tools bash _ inherit")
+        assert "Error" not in r.output
+        ws = handler_with_tools.tools._load_workspace_tools()
+        assert "bash" not in ws
+
+    def test_skip_both_columns(self, handler_with_tools: CommandHandler):
+        r = handler_with_tools.handle("/config tools bash _ _")
+        assert "Nothing changed" in r.output
+
+    def test_unknown_tool(self, handler_with_tools: CommandHandler):
+        r = handler_with_tools.handle("/config tools nonexistent off")
+        assert "Unknown tool" in r.output or "Error" in r.output
+
+    def test_invalid_global_value(self, handler_with_tools: CommandHandler):
+        r = handler_with_tools.handle("/config tools bash maybe")
+        assert "Error" in r.output or "Invalid" in r.output
+
+    def test_invalid_workspace_value(self, handler_with_tools: CommandHandler):
+        r = handler_with_tools.handle("/config tools bash _ maybe")
+        assert "Error" in r.output or "Invalid" in r.output
+
+    def test_no_tools_executor(self, handler: CommandHandler):
+        """Listing tools without ToolExecutor attached still works."""
+        r = handler.handle("/config tools")
+        assert "bash" in r.output

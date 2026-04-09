@@ -149,6 +149,8 @@ class ToolExecutor:
         self.timeout = timeout
         self.max_chars = max_chars
         self._todo_file = workspace / ".nanoharness" / "todo.json"
+        self._tools_file = workspace / ".nanoharness" / "tools.json"
+        self._ws_tools_cache: dict[str, bool] | None = None
         self.confirm_fn: Callable[[str, dict], Awaitable[bool]] | None = None
 
     def _safe_path(self, path: str) -> Path:
@@ -371,6 +373,40 @@ class ToolExecutor:
         ls = stdout_cr.lines_shown if stdout_cr else 0
         lt = stdout_cr.lines_total if stdout_cr else 0
         return final, ls, lt
+
+    def _load_workspace_tools(self) -> dict[str, bool]:
+        """Return only explicitly-set workspace overrides {name: bool}. Absent = inherit."""
+        if self._ws_tools_cache is not None:
+            return self._ws_tools_cache
+        if not self._tools_file.is_file():
+            self._ws_tools_cache = {}
+            return self._ws_tools_cache
+        try:
+            self._ws_tools_cache = json.loads(self._tools_file.read_text())
+        except (json.JSONDecodeError, OSError):
+            self._ws_tools_cache = {}
+        return self._ws_tools_cache
+
+    def _save_workspace_tools(self, state: dict[str, bool | None]) -> None:
+        """Save only non-None entries (None means remove override = inherit)."""
+        to_save = {k: v for k, v in state.items() if v is not None}
+        self._tools_file.parent.mkdir(parents=True, exist_ok=True)
+        self._tools_file.write_text(json.dumps(to_save, indent=2))
+        self._ws_tools_cache = to_save
+
+    def enabled_schemas(self, tools_config: Any) -> list[dict]:
+        """Return TOOL_SCHEMAS filtered by effective (global + workspace) settings."""
+        ws = self._load_workspace_tools()
+        result = []
+        for schema in TOOL_SCHEMAS:
+            name = schema["function"]["name"]
+            if name in ws:
+                enabled = ws[name]
+            else:
+                enabled = getattr(tools_config, name, True)
+            if enabled:
+                result.append(schema)
+        return result
 
     def _load_todo(self) -> list[dict]:
         if not self._todo_file.is_file():

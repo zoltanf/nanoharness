@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .config import CONFIG_KEYS
+from .config import CONFIG_KEYS, TOOL_NAMES
 
 if TYPE_CHECKING:
     from .config import Config
@@ -34,6 +34,9 @@ Commands:
   /clear                      Clear conversation history
   /config                     Show current configuration
   /config set KEY VAL         Edit a config value (saved to ~/.nanoharness/config.toml)
+  /config tools               Show tool enable/disable state (TUI: opens interactive editor)
+  /config tools TOOL [G] [W]  Set global (G) and/or workspace (W) enable for a tool
+                              Values: on | off | _ (skip); workspace also accepts inherit
   /info [prompt|tools]        Show model details, current system prompt, or available tools
   /pull [model|all]           Pull a model (defaults to current); 'all' pulls every local model
   /update ollama              Update Ollama to the latest version
@@ -143,13 +146,20 @@ class CommandHandler:
                 if not arg:
                     return CommandResult(output=self._config_show())
 
-                set_parts = arg.split(maxsplit=2)
-                if set_parts[0].lower() != "set" or len(set_parts) < 3:
+                arg_parts = arg.split(maxsplit=3)
+                first = arg_parts[0].lower()
+
+                if first == "tools":
+                    return self._config_tools_command(arg_parts[1:])
+
+                if first != "set" or len(arg_parts) < 3:
                     return CommandResult(
-                        output="Usage: /config set <key> <value>\nType /config to see all keys and current values."
+                        output="Usage: /config set <key> <value>\n"
+                               "       /config tools [<tool> [global] [workspace]]\n"
+                               "Type /config to see all keys and current values."
                     )
 
-                key, value = set_parts[1].lower(), set_parts[2]
+                key, value = arg_parts[1].lower(), arg_parts[2]
                 err = self._config_set(key, value)
                 if err:
                     return CommandResult(output=f"Error: {err}")
@@ -278,8 +288,67 @@ class CommandHandler:
             f"  workspace             = {self.config.workspace}  (use /workspace to change)",
             "",
             "Usage: /config set <key> <value>",
+            "       /config tools [<tool> [global] [workspace]]",
             "Restart NanoHarness for changes to take effect.",
         ]
+        return "\n".join(lines)
+
+    def _config_tools_command(self, rest: list[str]) -> CommandResult:
+        """Handle /config tools [<tool> [global] [workspace]]."""
+        if not rest:
+            return CommandResult(output=self._config_tools_show())
+
+        tool = rest[0].lower()
+        if tool not in TOOL_NAMES:
+            return CommandResult(output=f"Unknown tool '{tool}'. Available: {', '.join(TOOL_NAMES)}")
+
+        g_arg = rest[1].lower() if len(rest) >= 2 else "_"
+        w_arg = rest[2].lower() if len(rest) >= 3 else "_"
+
+        # Validate
+        if g_arg not in ("on", "off", "_"):
+            return CommandResult(output=f"Invalid global value '{g_arg}'. Use: on | off | _ (skip)")
+        if w_arg not in ("on", "off", "inherit", "_"):
+            return CommandResult(output=f"Invalid workspace value '{w_arg}'. Use: on | off | inherit | _ (skip)")
+
+        from .config import write_config_toml, CONFIG_FILE
+        msgs = []
+
+        if g_arg != "_":
+            setattr(self.config.tools, tool, g_arg == "on")
+            write_config_toml(self.config)
+            msgs.append(f"Global {tool} = {g_arg}  (saved to {CONFIG_FILE})")
+
+        if w_arg != "_" and self.tools is not None:
+            ws = self.tools._load_workspace_tools()
+            if w_arg == "inherit":
+                ws.pop(tool, None)
+            else:
+                ws[tool] = (w_arg == "on")
+            self.tools._save_workspace_tools(ws)
+            msgs.append(f"Workspace {tool} = {w_arg}  (saved to workspace .nanoharness/tools.json)")
+
+        if not msgs:
+            return CommandResult(output="Nothing changed (both columns skipped with '_').")
+        return CommandResult(output="\n".join(msgs))
+
+    def _config_tools_show(self) -> str:
+        """List all tools with global and workspace enable state."""
+        ws = self.tools._load_workspace_tools() if self.tools else {}
+        lines = ["Tools  (global / workspace):"]
+        for name in TOOL_NAMES:
+            g_val = getattr(self.config.tools, name, True)
+            g = "on" if g_val else "off"
+            if name in ws:
+                w = "on" if ws[name] else "off"
+            else:
+                w = "inherit"
+            eff = "on" if ws.get(name, g_val) else "off"
+            lines.append(f"  {name:<15} {g:<6} / {w:<10} →  {eff}")
+        lines.append("")
+        lines.append("Interactive editor: /config tools  (TUI only)")
+        lines.append("Set values:  /config tools <tool> [global] [workspace]")
+        lines.append("             Values: on | off | _ (skip); workspace also accepts inherit")
         return "\n".join(lines)
 
     @staticmethod

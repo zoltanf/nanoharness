@@ -13,11 +13,14 @@ from nanoharness.config import (
     OllamaConfig,
     SafetyConfig,
     WebConfig,
+    ToolsConfig,
+    TOOL_NAMES,
     _apply_toml,
     _apply_env,
     _apply_args,
     parse_args,
     load_config,
+    write_config_toml,
 )
 
 
@@ -192,3 +195,91 @@ class TestPrecedence:
         assert cfg.model.name == "from_toml"  # from TOML
         assert cfg.safety.level == "confirm"  # from env
         assert cfg.agent.max_steps == 3  # from CLI
+
+
+class TestToolsConfig:
+    def test_defaults_all_enabled(self):
+        cfg = ToolsConfig()
+        for name in TOOL_NAMES:
+            assert getattr(cfg, name) is True
+
+    def test_tool_names_matches_fields(self):
+        cfg = ToolsConfig()
+        for name in TOOL_NAMES:
+            assert hasattr(cfg, name), f"ToolsConfig missing field: {name}"
+
+    def test_config_has_tools(self):
+        cfg = Config()
+        assert isinstance(cfg.tools, ToolsConfig)
+        assert cfg.tools.bash is True
+
+
+class TestApplyTomlTools:
+    def test_disable_one_tool(self):
+        cfg = Config()
+        _apply_toml(cfg, {"tools": {"bash": False}})
+        assert cfg.tools.bash is False
+        assert cfg.tools.python_exec is True
+
+    def test_enable_already_enabled(self):
+        cfg = Config()
+        _apply_toml(cfg, {"tools": {"read_file": True}})
+        assert cfg.tools.read_file is True
+
+    def test_disable_multiple(self):
+        cfg = Config()
+        _apply_toml(cfg, {"tools": {"bash": False, "python_exec": False, "fetch_webpage": False}})
+        assert cfg.tools.bash is False
+        assert cfg.tools.python_exec is False
+        assert cfg.tools.fetch_webpage is False
+        assert cfg.tools.todo is True
+
+    def test_unknown_tool_ignored(self):
+        cfg = Config()
+        _apply_toml(cfg, {"tools": {"nonexistent": False}})
+        for name in TOOL_NAMES:
+            assert getattr(cfg.tools, name) is True
+
+    def test_empty_tools_section(self):
+        cfg = Config()
+        _apply_toml(cfg, {"tools": {}})
+        for name in TOOL_NAMES:
+            assert getattr(cfg.tools, name) is True
+
+
+class TestWriteConfigTomlTools:
+    def test_tools_section_written(self, tmp_path: Path):
+        cfg = Config()
+        path = tmp_path / "config.toml"
+        write_config_toml(cfg, path)
+        content = path.read_text()
+        assert "[tools]" in content
+        for name in TOOL_NAMES:
+            assert f"{name} = true" in content
+
+    def test_disabled_tool_written(self, tmp_path: Path):
+        cfg = Config()
+        cfg.tools.bash = False
+        cfg.tools.python_exec = False
+        path = tmp_path / "config.toml"
+        write_config_toml(cfg, path)
+        content = path.read_text()
+        assert "bash = false" in content
+        assert "python_exec = false" in content
+        assert "read_file = true" in content
+
+    def test_roundtrip(self, tmp_path: Path):
+        cfg = Config()
+        cfg.tools.bash = False
+        cfg.tools.fetch_webpage = False
+        path = tmp_path / "config.toml"
+        write_config_toml(cfg, path)
+
+        import tomllib
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+        cfg2 = Config()
+        _apply_toml(cfg2, data)
+        assert cfg2.tools.bash is False
+        assert cfg2.tools.fetch_webpage is False
+        assert cfg2.tools.read_file is True

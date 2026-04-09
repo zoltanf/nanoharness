@@ -452,3 +452,65 @@ class TestConstants:
     def test_command_hints_coverage(self):
         for cmd in COMMANDS:
             assert cmd in COMMAND_HINTS
+
+
+class TestConfigToolsHints:
+    def test_config_with_space_shows_tools_hint(self):
+        hint = hint_for_input("/config ")
+        assert "tools" in hint
+
+    def test_config_t_partial(self):
+        hint = hint_for_input("/config t")
+        assert "tools" in hint
+
+    def test_config_tools_with_space(self):
+        hint = hint_for_input("/config tools ")
+        assert "tool" in hint.lower()
+
+    def test_config_tools_tool_name(self):
+        hint = hint_for_input("/config tools bash ")
+        assert "on" in hint
+        assert "off" in hint
+
+    def test_config_tools_workspace_arg(self):
+        hint = hint_for_input("/config tools bash on ")
+        assert "inherit" in hint or "on" in hint
+
+
+class TestConfigToolsCompletion:
+    def test_config_space_suggests_set_and_tools(self, workspace: Path):
+        completions = complete_line(workspace, "/config ")
+        assert any("set" in c for c in completions)
+        assert any("tools" in c for c in completions)
+
+    def test_config_t_suggests_tools(self, workspace: Path):
+        completions = complete_line(workspace, "/config t")
+        assert any("tools" in c for c in completions)
+
+    def test_config_tools_completes_tool_names(self, workspace: Path):
+        completions = complete_line(workspace, "/config tools ")
+        from nanoharness.config import TOOL_NAMES
+        for name in TOOL_NAMES:
+            assert any(name in c for c in completions)
+
+    def test_config_tools_partial_tool_name(self, workspace: Path):
+        completions = complete_line(workspace, "/config tools ba")
+        assert any("bash" in c for c in completions)
+        assert not any("python_exec" in c for c in completions)
+
+    def test_config_tools_global_values(self, workspace: Path):
+        completions = complete_line(workspace, "/config tools bash ")
+        assert any("on" in c for c in completions)
+        assert any("off" in c for c in completions)
+        assert any("_" in c for c in completions)
+
+    def test_config_tools_workspace_values(self, workspace: Path):
+        completions = complete_line(workspace, "/config tools bash on ")
+        assert any("inherit" in c for c in completions)
+        assert any(" on" in c for c in completions)
+        assert any(" off" in c for c in completions)
+
+    def test_config_set_still_works(self, workspace: Path):
+        completions = complete_line(workspace, "/config set ")
+        from nanoharness.completion import CONFIG_KEYS
+        assert any("model.name" in c for c in completions)
