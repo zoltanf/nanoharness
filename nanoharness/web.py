@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Requ
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from . import logging as log, BANNER as _BANNER, __version__
-from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON
+from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON, TOOL_NAMES, write_config_toml
 from .tools import format_confirm_preview
 
 if TYPE_CHECKING:
@@ -63,6 +63,7 @@ def create_app(
         .replace("__BANNER__", json.dumps(_BANNER))
         .replace("__VERSION__", json.dumps(__version__))
         .replace("__OLLAMA_URL__", json.dumps(str(cfg.ollama.base_url)))
+        .replace("__TOOL_NAMES_JSON__", json.dumps(TOOL_NAMES))
         .replace("__SAFETY_WARNING_JSON__", json.dumps(WARN_SAFETY_NONE if cfg.safety.level == "none" else ""))
         .replace("__DEBUG_WARNING_JSON__", json.dumps(WARN_DEBUG_ON if cfg.debug else ""))
     )
@@ -223,6 +224,42 @@ def create_app(
             "progress": progress,
         }
 
+    @app.get("/api/config/tools")
+    async def get_tools_config():
+        """Return current global and workspace tool enable/disable state."""
+        tools_cfg = agent.config.tools
+        ws = agent.tools._load_workspace_tools()
+        return {"tools": {
+            name: {"global": getattr(tools_cfg, name, True), "workspace": ws.get(name, None)}
+            for name in TOOL_NAMES
+        }}
+
+    @app.post("/api/config/tools")
+    async def set_tools_config(request: Request):
+        """Save global and workspace tool enable/disable state."""
+        body = await request.json()
+        tools_map = body.get("tools", {})
+        tools_cfg = agent.config.tools
+        ws_update: dict[str, bool | None] = {}
+        global_changed = False
+        for name in TOOL_NAMES:
+            entry = tools_map.get(name)
+            if entry is None:
+                continue
+            if isinstance(entry.get("global"), bool):
+                setattr(tools_cfg, name, entry["global"])
+                global_changed = True
+            if "workspace" in entry:
+                ws_update[name] = entry["workspace"]
+        if global_changed:
+            write_config_toml(agent.config)
+        agent.tools._save_workspace_tools(ws_update)
+        ws_fresh = agent.tools._load_workspace_tools()
+        return {"tools": {
+            name: {"global": getattr(tools_cfg, name, True), "workspace": ws_fresh.get(name, None)}
+            for name in TOOL_NAMES
+        }}
+
     return app
 
 
@@ -369,6 +406,91 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #input-area button { background: var(--accent); color: var(--btn-fg); border: none; border-radius: var(--radius); padding: 6px 12px; font-weight: 700; cursor: pointer; font-size: 18px; line-height: 1; flex-shrink: 0; }
   #input-area button:hover { opacity: .9; }
   #input-area button:disabled { opacity: .4; cursor: default; }
+
+  /* ── Confirm Modal ──────────────────────────────────── */
+  #confirm-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 9999;
+  }
+  .c-box {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px 28px;
+    max-width: 600px; width: 90%;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+  }
+  .c-title { font-weight: 700; font-size: 15px; color: var(--accent); margin-bottom: 12px; }
+  .c-preview {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 10px 14px; white-space: pre-wrap; word-break: break-word;
+    color: var(--fg); font-family: var(--mono); font-size: 13px;
+    max-height: 200px; overflow-y: auto; margin-bottom: 16px;
+  }
+  .c-buttons { display: flex; gap: 12px; }
+  .c-allow, .c-deny {
+    padding: 8px 18px; border-radius: var(--radius); border: none;
+    cursor: pointer; font-size: 13px; font-weight: 600; color: #fff;
+  }
+  .c-allow { background: var(--green); }
+  .c-allow:hover { opacity: .85; }
+  .c-deny  { background: var(--red); }
+  .c-deny:hover  { opacity: .85; }
+
+  /* ── Tools Config Modal ─────────────────────────────── */
+  .t-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 1000;
+  }
+  .t-box {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 20px 24px;
+    min-width: 340px; max-width: 500px; width: 90%;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+  }
+  .t-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 16px;
+  }
+  .t-title { font-weight: 700; font-size: 15px; color: var(--accent); }
+  .t-close {
+    background: none; border: none; color: var(--fg-dim); cursor: pointer;
+    font-size: 16px; padding: 2px 6px; border-radius: 4px; line-height: 1;
+  }
+  .t-close:hover { color: var(--fg); background: var(--bg3); }
+  .t-table { width: 100%; border-collapse: collapse; }
+  .t-table th {
+    text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--fg-dim); padding: 4px 8px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .t-col-tool { width: 55%; }
+  .t-col-toggle { width: 22.5%; text-align: center; }
+  .t-table td { padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  .t-table tr:last-child td { border-bottom: none; }
+  .t-tool-name { font-family: var(--mono); font-size: 13px; }
+  /* 2-state toggle (Global) */
+  .t-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; border-radius: 20px; padding: 3px 12px;
+    font-size: 12px; font-weight: 600; min-width: 44px;
+    border: none; transition: background 0.15s, opacity 0.15s; outline: none;
+  }
+  .t-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .t-on  { background: var(--green); color: #fff; }
+  .t-off { background: var(--red);   color: #fff; }
+  /* 3-state toggle (Workspace) */
+  .t-ws {
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer; border-radius: 20px; padding: 3px 10px;
+    font-size: 12px; font-weight: 600; min-width: 60px;
+    border: 1px solid var(--border); transition: background 0.15s; outline: none;
+  }
+  .t-ws:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .t-ws-on      { background: var(--green); color: #fff; border-color: var(--green); }
+  .t-ws-off     { background: var(--red);   color: #fff; border-color: var(--red); }
+  .t-ws-inherit { background: var(--bg3);   color: var(--fg-dim); }
+  .t-footer { margin-top: 14px; font-size: 11px; color: var(--fg-dim); line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -407,6 +529,27 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
 </div>
 <span id="status-ws" style="display:none">connecting...</span>
+
+<!-- Tools config modal -->
+<div id="tools-modal-overlay" class="t-overlay" style="display:none" onclick="handleToolsOverlayClick(event)">
+  <div id="tools-modal" class="t-box" role="dialog" aria-modal="true" aria-label="Tool Configuration">
+    <div class="t-header">
+      <span class="t-title">Tool Configuration</span>
+      <button class="t-close" onclick="closeToolsModal()" aria-label="Close">&#x2715;</button>
+    </div>
+    <table class="t-table">
+      <thead><tr>
+        <th class="t-col-tool">Tool</th>
+        <th class="t-col-toggle">Global</th>
+        <th class="t-col-toggle">Workspace</th>
+      </tr></thead>
+      <tbody id="tools-tbody"></tbody>
+    </table>
+    <div class="t-footer">
+      Global: click to toggle on/off &nbsp;&middot;&nbsp; Workspace: click to cycle on / off / inherit
+    </div>
+  </div>
+</div>
 
 <script>
 const chat = document.getElementById('chat');
@@ -793,31 +936,20 @@ function handleEvent(ev) {
 function showConfirmModal(ev) {
   const overlay = document.createElement('div');
   overlay.id = 'confirm-overlay';
-  overlay.style.cssText = `
-    position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;
-    align-items:center;justify-content:center;z-index:9999;
-  `;
 
   const box = document.createElement('div');
-  box.style.cssText = `
-    background:#1a1a2e;border:2px solid #4a9eff;border-radius:8px;
-    padding:24px 28px;max-width:600px;width:90%;font-family:monospace;
-  `;
+  box.className = 'c-box';
 
   const title = document.createElement('div');
-  title.style.cssText = 'color:#f0a500;font-weight:bold;font-size:1.1em;margin-bottom:12px;';
+  title.className = 'c-title';
   title.textContent = 'Allow tool call?';
 
   const preview = document.createElement('pre');
-  preview.style.cssText = `
-    background:#0d0d1a;border-radius:4px;padding:10px 14px;
-    white-space:pre-wrap;word-break:break-word;color:#ccc;
-    font-size:0.88em;max-height:200px;overflow-y:auto;margin-bottom:16px;
-  `;
+  preview.className = 'c-preview';
   preview.textContent = ev.preview || ev.tool;
 
   const buttons = document.createElement('div');
-  buttons.style.cssText = 'display:flex;gap:12px;';
+  buttons.className = 'c-buttons';
 
   function respond(allowed) {
     document.getElementById('confirm-overlay')?.remove();
@@ -828,19 +960,13 @@ function showConfirmModal(ev) {
   }
 
   const allowBtn = document.createElement('button');
+  allowBtn.className = 'c-allow';
   allowBtn.textContent = 'Allow  [Enter]';
-  allowBtn.style.cssText = `
-    background:#1a6634;color:#fff;border:1px solid #2a8844;
-    padding:8px 18px;border-radius:4px;cursor:pointer;font-family:monospace;
-  `;
   allowBtn.onclick = () => respond(true);
 
   const denyBtn = document.createElement('button');
+  denyBtn.className = 'c-deny';
   denyBtn.textContent = 'Deny  [Esc / n]';
-  denyBtn.style.cssText = `
-    background:#6b1a1a;color:#fff;border:1px solid #8b2a2a;
-    padding:8px 18px;border-radius:4px;cursor:pointer;font-family:monospace;
-  `;
   denyBtn.onclick = () => respond(false);
 
   buttons.appendChild(allowBtn);
@@ -943,6 +1069,15 @@ function isIncompleteCommand(line) {
 function sendMessage() {
   const text = input.value.trim();
   if (!text || processing) return;
+  // Intercept /config tools — open modal client-side instead of sending to server
+  if (text.toLowerCase() === '/config tools') {
+    input.value = '';
+    autoResize();
+    hintEl.className = 'hidden';
+    hintEl.textContent = '';
+    openToolsModal();
+    return;
+  }
   if (isIncompleteCommand(text)) return;
 
   // Add to history
@@ -1273,6 +1408,121 @@ async function initWelcome() {
 
 initWelcome();
 connect();
+
+// ── Tools Config Modal ────────────────────────────────────
+const TOOL_NAMES_JS = __TOOL_NAMES_JSON__;
+let toolsState = null;
+
+async function openToolsModal() {
+  try {
+    const r = await fetch('/api/config/tools');
+    const d = await r.json();
+    toolsState = d.tools;
+  } catch(e) {
+    toolsState = {};
+    for (const n of TOOL_NAMES_JS) toolsState[n] = {global: true, workspace: null};
+  }
+  renderToolsModal();
+  document.getElementById('tools-modal-overlay').style.display = 'flex';
+  const first = document.querySelector('#tools-tbody .t-btn');
+  if (first) first.focus();
+  document.removeEventListener('keydown', toolsModalKeyHandler);
+  document.addEventListener('keydown', toolsModalKeyHandler);
+}
+
+function renderToolsModal() {
+  const tbody = document.getElementById('tools-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  for (const name of TOOL_NAMES_JS) {
+    const entry = (toolsState && toolsState[name]) || {global: true, workspace: null};
+    const tr = document.createElement('tr');
+
+    const tdName = document.createElement('td');
+    tdName.innerHTML = '<span class="t-tool-name">' + esc(name) + '</span>';
+    tr.appendChild(tdName);
+
+    const tdG = document.createElement('td');
+    tdG.className = 't-col-toggle';
+    const btnG = document.createElement('button');
+    btnG.className = 't-btn ' + (entry.global ? 't-on' : 't-off');
+    btnG.textContent = entry.global ? 'on' : 'off';
+    btnG.dataset.tool = name;
+    btnG.dataset.col = 'global';
+    btnG.addEventListener('click', () => cycleTool(name, 'global'));
+    tdG.appendChild(btnG);
+    tr.appendChild(tdG);
+
+    const tdW = document.createElement('td');
+    tdW.className = 't-col-toggle';
+    const btnW = document.createElement('button');
+    const wsClass = entry.workspace === null ? 't-ws-inherit' : (entry.workspace ? 't-ws-on' : 't-ws-off');
+    btnW.className = 't-ws ' + wsClass;
+    btnW.textContent = entry.workspace === null ? 'inherit' : (entry.workspace ? 'on' : 'off');
+    btnW.dataset.tool = name;
+    btnW.dataset.col = 'workspace';
+    btnW.addEventListener('click', () => cycleTool(name, 'workspace'));
+    tdW.appendChild(btnW);
+    tr.appendChild(tdW);
+
+    tbody.appendChild(tr);
+  }
+}
+
+function cycleTool(name, col) {
+  if (!toolsState || !toolsState[name]) return;
+  if (col === 'global') {
+    toolsState[name].global = !toolsState[name].global;
+  } else {
+    const cur = toolsState[name].workspace;
+    toolsState[name].workspace = cur === null ? true : cur === true ? false : null;
+  }
+  renderToolsModal();
+  document.querySelector(`[data-tool="${name}"][data-col="${col}"]`)?.focus();
+}
+
+async function closeToolsModal() {
+  document.removeEventListener('keydown', toolsModalKeyHandler);
+  document.getElementById('tools-modal-overlay').style.display = 'none';
+  if (!toolsState) return;
+  const snapshot = toolsState;
+  toolsState = null;
+  try {
+    await fetch('/api/config/tools', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tools: snapshot}),
+    });
+  } catch(e) {}
+}
+
+function handleToolsOverlayClick(e) {
+  if (e.target === e.currentTarget) closeToolsModal();
+}
+
+function toolsModalKeyHandler(e) {
+  if (e.key === 'Escape') { e.preventDefault(); closeToolsModal(); return; }
+  const focused = document.activeElement;
+  if (!focused || !focused.dataset || !focused.dataset.tool) return;
+  const idx = TOOL_NAMES_JS.indexOf(focused.dataset.tool);
+  const col = focused.dataset.col;
+  if (e.key === 'ArrowDown' && idx < TOOL_NAMES_JS.length - 1) {
+    e.preventDefault();
+    document.querySelector(`[data-tool="${TOOL_NAMES_JS[idx+1]}"][data-col="${col}"]`)?.focus();
+  } else if (e.key === 'ArrowUp' && idx > 0) {
+    e.preventDefault();
+    document.querySelector(`[data-tool="${TOOL_NAMES_JS[idx-1]}"][data-col="${col}"]`)?.focus();
+  } else if (e.key === 'ArrowRight' && col === 'global') {
+    e.preventDefault();
+    document.querySelector(`[data-tool="${focused.dataset.tool}"][data-col="workspace"]`)?.focus();
+  } else if (e.key === 'ArrowLeft' && col === 'workspace') {
+    e.preventDefault();
+    document.querySelector(`[data-tool="${focused.dataset.tool}"][data-col="global"]`)?.focus();
+  } else if (e.key === ' ' || e.key === 'Enter') {
+    e.preventDefault();
+    focused.click();
+  }
+}
 </script>
 </body>
 </html>
