@@ -109,7 +109,7 @@ class TestWorkspaceCommand:
     def test_no_arg(self, handler: CommandHandler):
         r = handler.handle("/workspace")
         assert "Current workspace" in r.output
-        assert "Usage" in r.output
+        assert "/workspace" in r.output
         assert r.workspace_changed is False
 
     def test_valid_dir(self, handler: CommandHandler, workspace: Path):

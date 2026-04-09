@@ -113,10 +113,10 @@ async def run_repl(agent: Agent) -> int:
                         if len(event.text) > 200:
                             result_preview += "..."
                         print(f"[result] {result_preview}", flush=True)
-                    case "markup":
+                    case "markdown":
                         from rich.console import Console
-                        from rich.text import Text as RichText
-                        Console().print(RichText.from_markup(event.text))
+                        from rich.markdown import Markdown as RichMarkdown
+                        Console().print(RichMarkdown(event.text))
                     case "status":
                         if event.text == "Conversation cleared.":
                             print("\033[2J\033[H", end="", flush=True)

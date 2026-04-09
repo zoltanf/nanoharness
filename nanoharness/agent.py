@@ -56,7 +56,7 @@ def _parse_code_blocks(text: str) -> list[tuple[str, str]]:
 @dataclass
 class StreamEvent:
     """Events emitted by the agent during processing."""
-    type: str  # "content" | "thinking" | "tool_call" | "tool_result" | "done" | "error" | "status" | "progress"
+    type: str  # "content" | "thinking" | "tool_call" | "tool_result" | "done" | "error" | "status" | "progress" | "markdown"
     text: str = ""
     tool_name: str = ""
     tool_args: dict = field(default_factory=dict)
@@ -271,7 +271,7 @@ class Agent:
                 })
 
     async def _info_command(self) -> AsyncIterator[StreamEvent]:
-        """Fetch Ollama server info, /api/ps and /api/show and yield a formatted content event."""
+        """Fetch Ollama server info, /api/ps and /api/show and yield a markdown event."""
         model = self.config.model.name
 
         version, running_models, show_data = await asyncio.gather(
@@ -287,28 +287,23 @@ class Agent:
                 ps_data = m
                 break
 
-        from rich.markup import escape as mesc
-
         def section(title: str, rows: list[tuple[str, str]]) -> str:
-            """Render a titled section with aligned key-value rows as Rich markup."""
-            label_w = max((len(r[0]) for r in rows), default=10)
-            sep = "─" * (label_w + 24)
-            lines = [f"[bold cyan]{mesc(title)}[/]", f"[dim]{sep}[/]"]
+            """Render a titled section as a markdown table."""
+            lines = [f"### {title}", "", "| | |", "|---|---|"]
             for label, value in rows:
-                lines.append(f"[dim]{label:<{label_w}}[/]  {mesc(value)}")
+                lines.append(f"| {label} | {value} |")
             return "\n".join(lines)
 
         parts: list[str] = []
 
         # ── Ollama server ────────────────────────────────────────────────────
-        server_rows: list[tuple[str, str]] = [
+        parts.append(section("Ollama", [
             ("Version", version),
             ("URL",     self.config.ollama.base_url),
-        ]
-        parts.append(section("Ollama", server_rows))
+        ]))
 
         # ── Model header ─────────────────────────────────────────────────────
-        parts.append(f"[bold]{mesc(model)}[/]")
+        parts.append(f"## {model}")
 
         det = show_data.get("details", {})
         caps = show_data.get("capabilities", [])
@@ -339,9 +334,9 @@ class Agent:
             if expires:
                 ps_rows.append(("Expires at", expires[:19].replace("T", " ")))
             if ps_rows:
-                parts.append(section("Running instance", ps_rows))
+                parts.append(section("Running Instance", ps_rows))
         else:
-            parts.append("[dim italic]Model not currently loaded[/]")
+            parts.append("*Model not currently loaded.*")
 
         # ── Parameters (/api/show) ───────────────────────────────────────────
         params_str = show_data.get("parameters", "").strip()
@@ -382,7 +377,7 @@ class Agent:
             if arch_rows:
                 parts.append(section("Architecture", arch_rows))
 
-        yield StreamEvent(type="markup", text="\n\n".join(parts))
+        yield StreamEvent(type="markdown", text="\n\n".join(parts))
         yield StreamEvent(type="done")
 
     async def _poll_reconnect(self, timeout: float = 30.0) -> bool:
@@ -402,14 +397,6 @@ class Agent:
             return await self.tools.confirm_fn(action_id, params)
         return default
 
-    async def _stream_subprocess_output(self, proc: asyncio.subprocess.Process) -> AsyncIterator[StreamEvent]:
-        """Yield progress events for each non-empty line from proc.stdout, then wait."""
-        assert proc.stdout is not None
-        async for raw_line in proc.stdout:
-            line = raw_line.decode(errors="replace").rstrip()
-            if line:
-                yield StreamEvent(type="progress", text=line)
-        await proc.wait()
 
     async def _pull_command(self, model: str) -> AsyncIterator[StreamEvent]:
         """Pull a model from Ollama with live progress events."""
@@ -556,15 +543,22 @@ class Agent:
             yield StreamEvent(type="done")
             return
 
-        yield StreamEvent(type="status", text=f"Running: {update_cmd}")
+        yield StreamEvent(type="tool_call", tool_name="bash", tool_args={"command": update_cmd})
 
         proc = await asyncio.create_subprocess_shell(
             update_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        async for ev in self._stream_subprocess_output(proc):
-            yield ev
+        lines: list[str] = []
+        async for raw in proc.stdout:
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                lines.append(line)
+        await proc.wait()
+
+        if lines:
+            yield StreamEvent(type="tool_result", text="\n".join(lines), tool_name="bash")
 
         if proc.returncode != 0:
             yield StreamEvent(
@@ -591,15 +585,22 @@ class Agent:
             return
 
         restart_cmd = await self._detect_ollama_restart_cmd(system, is_brew)
-        yield StreamEvent(type="status", text=f"Restarting Ollama: {restart_cmd}")
+        yield StreamEvent(type="tool_call", tool_name="bash", tool_args={"command": restart_cmd})
 
         restart_proc = await asyncio.create_subprocess_shell(
             restart_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        async for ev in self._stream_subprocess_output(restart_proc):
-            yield ev
+        restart_lines: list[str] = []
+        async for raw in restart_proc.stdout:
+            line = raw.decode(errors="replace").rstrip()
+            if line:
+                restart_lines.append(line)
+        await restart_proc.wait()
+
+        if restart_lines:
+            yield StreamEvent(type="tool_result", text="\n".join(restart_lines), tool_name="bash")
 
         # Poll until Ollama is healthy again
         yield StreamEvent(type="status", text="Waiting for Ollama to come back up...")
@@ -663,7 +664,6 @@ class Agent:
             parts = stripped.split(maxsplit=1)
             subcmd = parts[1].strip().lower() if len(parts) > 1 else ""
             if subcmd in ("prompt", "context"):
-                from rich.markup import escape as mesc
                 sys_prompt = self._system_prompt()
                 active = self.tools.enabled_schemas(self.config.tools)
                 sys_toks   = len(sys_prompt) // 4
@@ -675,53 +675,50 @@ class Agent:
                 level = self.config.safety.level
                 desc  = _SAFETY_DESCRIPTIONS.get(level, "")
                 ws    = str(self.config.workspace)
-                sep   = "─" * 52
-                col   = 16
 
                 lines = [
-                    "[bold cyan]System Prompt[/]",
-                    f"[dim]{sep}[/]",
+                    "## System Prompt",
+                    "",
                     "You are a coding agent. Use tools to complete tasks. Be direct and concise.",
                     "Use python_exec for math and computations; use todo to track progress on multi-step tasks.",
-                    f"[dim]Working directory:[/] [cyan]{mesc(ws)}[/]",
-                    f"[dim]Safety:[/] [yellow]{mesc(level)}[/][dim] — {mesc(desc)}[/]",
                     "",
-                    f"[bold cyan]Token Breakdown[/]",
-                    f"[dim]{sep}[/]",
-                    f"[dim]{'System prompt':<{col}}[/]  ≈ [bold]{sys_toks:>5,}[/] tokens",
-                    f"[dim]{'Tools schema':<{col}}[/]  ≈ [bold]{tools_toks:>5,}[/] tokens  [dim]({len(active)} active / {len(TOOL_SCHEMAS)} total)[/]",
-                    f"[dim]{'History':<{col}}[/]  ≈ [bold]{hist_toks:>5,}[/] tokens  [dim]({len(self.history)} messages)[/]",
-                    f"[dim]{sep}[/]",
-                    f"[dim]{'Total':<{col}}[/]  ≈ [bold]{total_toks:>5,}[/] tokens",
+                    f"**Working directory:** `{ws}`",
+                    f"**Safety:** `{level}` — {desc}",
+                    "",
+                    "## Token Breakdown",
+                    "",
+                    "| | |",
+                    "|---|---|",
+                    f"| System prompt | ≈ {sys_toks:,} tokens |",
+                    f"| Tools schema | ≈ {tools_toks:,} tokens *({len(active)} active / {len(TOOL_SCHEMAS)} total)* |",
+                    f"| History | ≈ {hist_toks:,} tokens *({len(self.history)} messages)* |",
+                    f"| **Total** | **≈ {total_toks:,} tokens** |",
                 ]
-                yield StreamEvent(type="markup", text="\n".join(lines))
+                yield StreamEvent(type="markdown", text="\n".join(lines))
                 yield StreamEvent(type="done")
             elif subcmd == "tools":
-                from rich.markup import escape as mesc
                 active = self.tools.enabled_schemas(self.config.tools)
-                name_w = max(len(t["function"]["name"]) for t in TOOL_SCHEMAS)
-                sep = "─" * (name_w + 48)
-                lines = [f"[bold cyan]Tools[/]", f"[dim]{sep}[/]"]
                 active_names = {t["function"]["name"] for t in active}
+                lines = ["## Tools", "", "| Tool | Description |", "|------|-------------|"]
                 for t in TOOL_SCHEMAS:
                     fn = t["function"]
                     name = fn["name"]
                     enabled = name in active_names
+                    status_str = "" if enabled else " *(disabled)*"
+                    desc_cell = fn["description"].replace("|", "\\|") + status_str
+                    lines.append(f"| `{name}` | {desc_cell} |")
                     params = fn.get("parameters", {})
                     props = list(params.get("properties", {}).keys())
-                    req = set(params.get("required", []))
-                    status = "" if enabled else "  [dim red](disabled)[/]"
-                    lines.append(f"[bold]{mesc(name):<{name_w}}[/]  {mesc(fn['description'])}{status}")
                     if props:
-                        req_parts = [p for p in props if p in req]
-                        opt_parts = [p for p in props if p not in req]
-                        param_str = "  ".join(req_parts)
+                        req = set(params.get("required", []))
+                        req_parts = [f"`{p}`" for p in props if p in req]
+                        opt_parts = [f"`{p}`" for p in props if p not in req]
+                        param_str = " ".join(req_parts)
                         if opt_parts:
-                            param_str += ("  " if req_parts else "") + f"[{', '.join(opt_parts)}]"
-                        lines.append(f"{'':>{name_w + 2}}[dim italic]{mesc(param_str)}[/]")
-                lines.append(f"[dim]{sep}[/]")
-                lines.append("[dim]Use /config tools to enable or disable tools.[/]")
-                yield StreamEvent(type="markup", text="\n".join(lines))
+                            param_str += (" " if req_parts else "") + f"[{', '.join(opt_parts)}]"
+                        lines.append(f"| | *{param_str}* |")
+                lines += ["", "Use `/config tools` to enable or disable tools."]
+                yield StreamEvent(type="markdown", text="\n".join(lines))
                 yield StreamEvent(type="done")
             else:
                 async for ev in self._info_command():
@@ -757,7 +754,9 @@ class Agent:
                 self.clear_history()
             if result.theme_changed:
                 yield StreamEvent(type="theme", text=self.config.ui.theme)
-            yield StreamEvent(type="status", text=result.output)
+            ev_type = "markdown" if result.is_markdown else "status"
+            if result.output:
+                yield StreamEvent(type=ev_type, text=result.output)
             yield StreamEvent(type="done", text="quit" if result.should_quit else "")
             return
 

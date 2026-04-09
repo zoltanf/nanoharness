@@ -383,9 +383,20 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .banner { font-family: var(--mono); font-size: 12px; color: var(--green); line-height: 1.4; white-space: pre; }
   .banner-meta { font-family: var(--mono); font-size: 12px; color: var(--fg-dim); margin-top: 4px; }
 
-  /* /info markup output */
-  .msg-markup { font-family: var(--mono); font-size: 13px; line-height: 1.7; }
-  .msg-markup .dim { color: var(--fg-dim); }
+  /* Command markdown output */
+  .msg-markdown { line-height: 1.6; }
+  .msg-markdown p { margin: 0.4em 0; }
+  .msg-markdown pre { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; overflow-x: auto; margin: 0.6em 0; }
+  .msg-markdown code { font-family: var(--mono); font-size: 13px; }
+  .msg-markdown :not(pre) > code { background: var(--bg2); padding: 2px 6px; border-radius: 4px; }
+  .msg-markdown h1, .msg-markdown h2, .msg-markdown h3 { color: var(--accent); margin: 0.6em 0 0.3em; }
+  .msg-markdown ul, .msg-markdown ol { padding-left: 1.5em; margin: 0.3em 0; }
+  .msg-markdown li { margin: 0.15em 0; }
+  .msg-markdown table { border-collapse: separate; border-spacing: 0; margin: 0.6em 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .msg-markdown th, .msg-markdown td { border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 6px 12px; }
+  .msg-markdown th:last-child, .msg-markdown td:last-child { border-right: none; }
+  .msg-markdown tr:last-child td { border-bottom: none; }
+  .msg-markdown th { background: var(--bg3); font-weight: 600; color: var(--fg); }
 
   /* Spinner */
   .spinner { display: flex; align-items: center; gap: 8px; color: var(--fg-dim); font-size: 13px; padding: 4px 0; }
@@ -403,7 +414,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   #input-area { padding: 6px 12px 6px 0; display: flex; align-items: center; gap: 8px; }
   #input-area textarea { flex: 1; background: transparent; color: var(--fg); border: none; padding: 6px 14px; font-family: var(--font); font-size: 14px; outline: none; resize: none; min-height: 32px; max-height: 200px; overflow-y: hidden; line-height: 1.5; }
   #input-area textarea::placeholder { color: var(--fg-dim); }
-  #input-area button { background: var(--accent); color: var(--btn-fg); border: none; border-radius: var(--radius); padding: 6px 12px; font-weight: 700; cursor: pointer; font-size: 18px; line-height: 1; flex-shrink: 0; }
+  #input-area button { background: var(--accent); color: var(--btn-fg); border: none; border-radius: var(--radius); width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: 700; cursor: pointer; font-size: 18px; line-height: 1; flex-shrink: 0; }
   #input-area button:hover { opacity: .9; }
   #input-area button:disabled { opacity: .4; cursor: default; }
 
@@ -501,7 +512,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div id="hint-line" class="hidden"></div>
   <div id="input-area">
     <textarea id="input" rows="1" placeholder="Tell me about this project" autocomplete="off" autofocus></textarea>
-    <button id="send" onclick="sendMessage()" aria-label="Send">&#x2191;</button>
+    <button id="send" onclick="sendMessage()" aria-label="Send"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 13V3M8 3L3 8M8 3L13 8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   </div>
   <div id="status">
     <div class="s-col">
@@ -858,12 +869,12 @@ function handleEvent(ev) {
       scrollBottom();
       break;
 
-    case 'markup':
+    case 'markdown':
       hideSpinner();
       flushAssistant();
       const mk = document.createElement('div');
-      mk.className = 'msg-markup';
-      mk.innerHTML = richToHtml(ev.text);
+      mk.className = 'msg-markdown';
+      mk.innerHTML = renderMd(ev.text);
       chat.appendChild(mk);
       scrollBottom();
       break;
@@ -884,6 +895,7 @@ function handleEvent(ev) {
       const st = document.createElement('div');
       st.className = 'msg-status';
       st.textContent = ev.text;
+      chat.appendChild(st);
       // Update thinking status if it changed
       if (ev.text.startsWith('Thinking mode:')) {
         if (ev.text.includes('once')) { statusThinking.textContent = 'once'; statusThinking.className = 'think-once'; thinkingEnabled = true; }
@@ -1327,41 +1339,6 @@ function esc(s) {
   return d.innerHTML;
 }
 
-// Convert Rich markup ([bold cyan]text[/]) to HTML.
-// Only handles the subset emitted by _info_command.
-function richToHtml(text) {
-  const COLOR = { cyan: 'var(--cyan)', green: 'var(--green)', red: 'var(--red)', yellow: 'var(--yellow)' };
-  const parts = text.split(/(\[[^\]]*\])/);
-  let html = '';
-  const stack = [];
-  for (const part of parts) {
-    if (!part.startsWith('[')) {
-      html += part.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>');
-      continue;
-    }
-    const tag = part.slice(1, -1).trim().toLowerCase();
-    if (tag === '/' || tag.startsWith('/')) {
-      const open = stack.pop();
-      if (open) html += '</' + open + '>';
-      continue;
-    }
-    const words = tag.split(/\s+/);
-    let elem = 'span', style = '', hasDim = false;
-    for (const w of words) {
-      if (w === 'bold')        elem = 'strong';
-      else if (w === 'italic') style += 'font-style:italic;';
-      else if (w === 'dim')    hasDim = true;
-      else if (COLOR[w])       style += 'color:' + COLOR[w] + ';';
-    }
-    let attrs = '';
-    if (hasDim) attrs += ' class="dim"';
-    if (style)  attrs += ' style="' + style + '"';
-    stack.push(elem);
-    html += '<' + elem + attrs + '>';
-  }
-  while (stack.length) html += '</' + stack.pop() + '>';
-  return html;
-}
 
 const APP_VERSION = __VERSION__;
 const OLLAMA_URL = __OLLAMA_URL__;

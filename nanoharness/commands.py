@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,6 +18,7 @@ if TYPE_CHECKING:
 class CommandResult:
     """Result of a slash command execution."""
     output: str
+    is_markdown: bool = False   # True → emit as 'markdown' event; False → 'status'
     should_quit: bool = False
     clear_history: bool = False
     shell_command: str | None = None
@@ -25,38 +27,38 @@ class CommandResult:
     theme_changed: bool = False
 
 
-HELP_TEXT = """
-Commands:
-  /think [on|off|once]        Toggle thinking mode; append to a message for one turn
-  /safety [confirm|workspace|none]  Show or set safety level for this session
-  /workspace [DIR]            Show or switch workspace directory
-  /code                       Open workspace in VS Code
-  /lazygit                    Open lazygit in a new terminal window
-  /clear                      Clear conversation history
-  /config                     Show current configuration
-  /config set KEY VAL         Edit a config value (saved to ~/.nanoharness/config.toml)
-  /config tools               Show tool enable/disable state (TUI: opens interactive editor)
-  /config tools TOOL [G] [W]  Set global (G) and/or workspace (W) enable for a tool
-                              Values: on | off | _ (skip); workspace also accepts inherit
-  /info [prompt|context|tools] Show model details, system prompt/context breakdown, or available tools
-                              prompt and context are aliases
-  /pull [model|all]           Pull a model (defaults to current); 'all' pulls every local model
-  /update ollama              Update Ollama to the latest version
-  /update models              Pull all local models (alias for /pull all)
-  /todo [list|clear]          Show or clear the task list
-  /todo add TEXT              Add a task
-  /todo done ID | remove ID   Complete or remove a task by ID
-  /quit | /exit               Exit NanoHarness
-  !<cmd>                      Run a shell command directly (e.g. !ls -la)
+HELP_TEXT = """\
+## Commands
 
-Key bindings:
-  Enter                       Send message
-  Ctrl+J                      Insert newline
-  Tab                         Autocomplete command or path
-  PageUp / PageDown           Scroll chat history
-  Home / End                  Jump to top / bottom of chat
-  Escape                      Interrupt running agent
-  Ctrl+C                      Quit
+- `/think [on|off|once]` — Toggle thinking mode; append to a message for one turn
+- `/safety [confirm|workspace|none]` — Show or set safety level for this session
+- `/workspace [DIR]` — Show or switch workspace directory
+- `/code` — Open workspace in VS Code
+- `/lazygit` — Open lazygit in a new terminal window
+- `/clear` — Clear conversation history
+- `/config` — Show current configuration
+- `/config set KEY VAL` — Edit a config value (saved to `~/.nanoharness/config.toml`)
+- `/config tools` — Show tool enable/disable state *(TUI: opens interactive editor)*
+- `/config tools TOOL [G] [W]` — Set global (G) and/or workspace (W) enable for a tool — values: `on` | `off` | `_` skip; workspace also accepts `inherit`
+- `/info [prompt|context|tools]` — Show model details, system prompt/context breakdown, or available tools
+- `/pull [model|all]` — Pull a model (defaults to current); `all` pulls every local model
+- `/update ollama` — Update Ollama to the latest version
+- `/update models` — Pull all local models (alias for `/pull all`)
+- `/todo [list|clear]` — Show or clear the task list
+- `/todo add TEXT` — Add a task
+- `/todo done ID` | `/todo remove ID` — Complete or remove a task by ID
+- `/quit` | `/exit` — Exit NanoHarness
+- `!<cmd>` — Run a shell command directly (e.g. `!ls -la`)
+
+## Key bindings
+
+- `Enter` — Send message
+- `Ctrl+J` — Insert newline
+- `Tab` — Autocomplete command or path
+- `PageUp` / `PageDown` — Scroll chat history
+- `Home` / `End` — Jump to top / bottom of chat
+- `Escape` — Interrupt running agent
+- `Ctrl+C` — Quit
 """
 
 _LINUX_TERMINALS = [
@@ -98,7 +100,7 @@ class CommandHandler:
         if t.startswith("!"):
             shell_cmd = t[1:].strip()
             if not shell_cmd:
-                return CommandResult(output="Usage: !<command> (e.g. !ls -la)")
+                return CommandResult(output="Usage: `!<command>` (e.g. `!ls -la`)", is_markdown=True)
             return CommandResult(output="", shell_command=shell_cmd)
 
         parts = t.split(maxsplit=1)
@@ -128,7 +130,10 @@ class CommandHandler:
 
             case "/workspace":
                 if not arg:
-                    return CommandResult(output=f"Current workspace: {self.config.workspace}\nUsage: /workspace <path>")
+                    return CommandResult(
+                        output=f"**Current workspace:** `{self.config.workspace}`\n\nUse `/workspace <path>` to switch directories.",
+                        is_markdown=True,
+                    )
                 new_path = Path(arg).expanduser()
                 if not new_path.is_absolute():
                     new_path = self.config.workspace / new_path
@@ -146,7 +151,7 @@ class CommandHandler:
 
             case "/config":
                 if not arg:
-                    return CommandResult(output=self._config_show())
+                    return CommandResult(output=self._config_show(), is_markdown=True)
 
                 arg_parts = arg.split(maxsplit=3)
                 first = arg_parts[0].lower()
@@ -159,29 +164,33 @@ class CommandHandler:
 
                 if first != "set" or len(arg_parts) < 3:
                     return CommandResult(
-                        output="Usage: /config set <key> <value>\n"
-                               "       /config tools [<tool> [global] [workspace]]\n"
-                               "       /config theme light|dark|auto\n"
-                               "Type /config to see all keys and current values."
+                        output=(
+                            "**Usage:**\n\n"
+                            "- `/config set <key> <value>`\n"
+                            "- `/config tools [<tool> [global] [workspace]]`\n"
+                            "- `/config theme light|dark|auto`\n\n"
+                            "Type `/config` to see all keys and current values."
+                        ),
+                        is_markdown=True,
                     )
 
                 key, value = arg_parts[1].lower(), arg_parts[2]
                 err = self._config_set(key, value)
                 if err:
-                    return CommandResult(output=f"Error: {err}")
+                    return CommandResult(output=f"Error: {err}", is_markdown=True)
 
                 from .config import write_config_toml, CONFIG_FILE
                 write_config_toml(self.config)
                 return CommandResult(
                     output=(
-                        f"Set {key} = {value}\n"
-                        f"Saved to {CONFIG_FILE}\n"
-                        "Restart NanoHarness for changes to take effect."
-                    )
+                        f"Set `{key}` = `{value}`\n\n"
+                        f"Saved to `{CONFIG_FILE}`. Restart NanoHarness for changes to take effect."
+                    ),
+                    is_markdown=True,
                 )
 
             case "/help":
-                return CommandResult(output=HELP_TEXT)
+                return CommandResult(output=HELP_TEXT, is_markdown=True)
 
             case "/code":
                 import subprocess
@@ -190,7 +199,10 @@ class CommandHandler:
                     subprocess.Popen(["code", ws])
                     return CommandResult(output=f"Opening VS Code: {ws}")
                 except FileNotFoundError:
-                    return CommandResult(output="Error: 'code' not found. Install the VS Code CLI via: Shell Command: Install 'code' command in PATH")
+                    return CommandResult(
+                        output="Error: `code` not found. Install the VS Code CLI via *Shell Command: Install 'code' command in PATH*.",
+                        is_markdown=True,
+                    )
 
             case "/lazygit":
                 import platform
@@ -199,7 +211,8 @@ class CommandHandler:
                 import subprocess
                 if not shutil.which("lazygit"):
                     return CommandResult(
-                        output="Error: 'lazygit' not found. Install from https://github.com/jesseduffield/lazygit"
+                        output="Error: `lazygit` not found. Install from [jesseduffield/lazygit](https://github.com/jesseduffield/lazygit).",
+                        is_markdown=True,
                     )
                 ws = shlex.quote(str(self.config.workspace))
                 try:
@@ -213,12 +226,18 @@ class CommandHandler:
                                 subprocess.Popen(cmd)
                                 break
                         else:
-                            return CommandResult(output="Error: No supported terminal emulator found (tried: gnome-terminal, xterm, kitty, alacritty, wezterm).")
+                            return CommandResult(
+                                output="Error: No supported terminal emulator found (tried: gnome-terminal, xterm, kitty, alacritty, wezterm).",
+                                is_markdown=True,
+                            )
                     else:
-                        return CommandResult(output=f"Error: Unsupported platform '{platform.system()}'.")
+                        return CommandResult(
+                            output=f"Error: Unsupported platform `{platform.system()}`.",
+                            is_markdown=True,
+                        )
                     return CommandResult(output=f"Opening lazygit in new terminal: {self.config.workspace}")
                 except Exception as e:
-                    return CommandResult(output=f"Error launching lazygit: {e}")
+                    return CommandResult(output=f"Error launching lazygit: {e}", is_markdown=True)
 
             case "/todo":
                 return self._todo_command(arg)
@@ -227,15 +246,23 @@ class CommandHandler:
                 if not arg:
                     level = self.config.safety.level
                     return CommandResult(
-                        output=f"Safety: {level}  (options: confirm | workspace | none)\n"
-                               f"  confirm   — workspace restrictions + confirmation for bash/python/write\n"
-                               f"  workspace — workspace containment + env scrubbing (default)\n"
-                               f"  none      — no restrictions\n"
-                               f"Use /config set safety.level <value> to save as startup default.",
+                        output=(
+                            f"**Safety level:** `{level}`\n\n"
+                            "| Level | Description |\n"
+                            "|-------|-------------|\n"
+                            "| `confirm` | Workspace restrictions + confirmation for bash/python/write |\n"
+                            "| `workspace` | Workspace containment + env scrubbing *(default)* |\n"
+                            "| `none` | No restrictions |\n\n"
+                            "Use `/config set safety.level <value>` to save as startup default."
+                        ),
+                        is_markdown=True,
                         refresh_status=True,
                     )
                 if arg not in ("confirm", "workspace", "none"):
-                    return CommandResult(output="Usage: /safety [confirm|workspace|none]")
+                    return CommandResult(
+                        output="Usage: `/safety [confirm|workspace|none]`",
+                        is_markdown=True,
+                    )
                 self.config.safety.level = arg
                 if self.tools:
                     self.tools.safety = arg
@@ -245,7 +272,10 @@ class CommandHandler:
                 return CommandResult(output="Goodbye.", should_quit=True)
 
             case _:
-                return CommandResult(output=f"Unknown command: {cmd}. Type /help for available commands.")
+                return CommandResult(
+                    output=f"Unknown command: `{cmd}`. Type `/help` for available commands.",
+                    is_markdown=True,
+                )
 
     def _todo_command(self, arg: str) -> CommandResult:
         if self.tools is None:
@@ -256,68 +286,98 @@ class CommandHandler:
 
         match sub:
             case "" | "list":
-                output = self.tools._todo("list")
+                output = self._todo_list_to_md(self.tools._todo("list"))
+                return CommandResult(output=output, is_markdown=True, refresh_status=True)
             case "clear":
                 output = self.tools._todo("clear")
             case "add":
                 if not rest:
-                    return CommandResult(output="Usage: /todo add <task text>")
+                    return CommandResult(output="Usage: `/todo add <task text>`", is_markdown=True)
                 output = self.tools._todo("add", task=rest)
             case "done":
                 try:
                     output = self.tools._todo("complete", task_id=int(rest))
                 except ValueError:
-                    return CommandResult(output="Usage: /todo done <id>")
+                    return CommandResult(output="Usage: `/todo done <id>`", is_markdown=True)
             case "remove":
                 try:
                     output = self.tools._todo("remove", task_id=int(rest))
                 except ValueError:
-                    return CommandResult(output="Usage: /todo remove <id>")
+                    return CommandResult(output="Usage: `/todo remove <id>`", is_markdown=True)
             case _:
-                return CommandResult(output="Usage: /todo [list|clear|add TEXT|done ID|remove ID]")
+                return CommandResult(
+                    output="Usage: `/todo [list|clear|add TEXT|done ID|remove ID]`",
+                    is_markdown=True,
+                )
         return CommandResult(output=output, refresh_status=True)
+
+    @staticmethod
+    def _todo_list_to_md(raw: str) -> str:
+        """Convert plain todo list output to markdown."""
+        if raw == "No tasks":
+            return "*No tasks.*"
+        lines = ["**Tasks**", ""]
+        for line in raw.splitlines():
+            m = re.match(r"#(\d+) \[(\w+)\] (.*)", line)
+            if m:
+                id_, status, task = m.groups()
+                if status == "done":
+                    lines.append(f"- `#{id_}` *{task}* *(done)*")
+                else:
+                    lines.append(f"- `#{id_}` {task}")
+            else:
+                lines.append(f"- {line}")
+        return "\n".join(lines)
 
     def _config_show(self) -> str:
         think_state = "on" if self.config.model.thinking else "off"
         if self._think_once:
             think_state += " (once)"
-        lines = [
-            "Configuration  (key = value)",
-            f"  model.name            = {self.config.model.name}",
-            f"  model.thinking        = {think_state}",
-            f"  model.num_ctx         = {self.config.model.num_ctx}  (0 = model default)",
-            f"  agent.max_steps       = {self.config.agent.max_steps}",
-            f"  agent.timeout_seconds = {self.config.agent.timeout_seconds}",
-            f"  agent.max_output_chars= {self.config.agent.max_output_chars}",
-            f"  safety.level          = {self.config.safety.level}  (use /safety to change for this session)",
-            f"  ollama.base_url       = {self.config.ollama.base_url}",
-            f"  ui.theme              = {self.config.ui.theme}  (use /config theme to change)",
-            f"  workspace             = {self.config.workspace}  (use /workspace to change)",
-            "",
-            "Usage: /config set <key> <value>",
-            "       /config tools [<tool> [global] [workspace]]",
-            "       /config theme light|dark|auto",
-            "Restart NanoHarness for changes to take effect.",
-        ]
-        return "\n".join(lines)
+        block = "\n".join([
+            f"model.name            = {self.config.model.name}",
+            f"model.thinking        = {think_state}",
+            f"model.num_ctx         = {self.config.model.num_ctx}  (0 = model default)",
+            f"agent.max_steps       = {self.config.agent.max_steps}",
+            f"agent.timeout_seconds = {self.config.agent.timeout_seconds}",
+            f"agent.max_output_chars= {self.config.agent.max_output_chars}",
+            f"safety.level          = {self.config.safety.level}  (use /safety to change for this session)",
+            f"ollama.base_url       = {self.config.ollama.base_url}",
+            f"ui.theme              = {self.config.ui.theme}  (use /config theme to change)",
+            f"workspace             = {self.config.workspace}  (use /workspace to change)",
+        ])
+        return (
+            "## Configuration\n\n"
+            f"```\n{block}\n```\n\n"
+            "Usage: `/config set <key> <value>` · `/config tools [<tool> …]` · `/config theme light|dark|auto`\n\n"
+            "*Restart NanoHarness for most changes to take effect.*"
+        )
 
     def _config_tools_command(self, rest: list[str]) -> CommandResult:
         """Handle /config tools [<tool> [global] [workspace]]."""
         if not rest:
-            return CommandResult(output=self._config_tools_show())
+            return CommandResult(output=self._config_tools_show(), is_markdown=True)
 
         tool = rest[0].lower()
         if tool not in TOOL_NAMES:
-            return CommandResult(output=f"Unknown tool '{tool}'. Available: {', '.join(TOOL_NAMES)}")
+            return CommandResult(
+                output=f"Unknown tool `{tool}`. Available: {', '.join(f'`{n}`' for n in TOOL_NAMES)}",
+                is_markdown=True,
+            )
 
         g_arg = rest[1].lower() if len(rest) >= 2 else "_"
         w_arg = rest[2].lower() if len(rest) >= 3 else "_"
 
         # Validate
         if g_arg not in ("on", "off", "_"):
-            return CommandResult(output=f"Invalid global value '{g_arg}'. Use: on | off | _ (skip)")
+            return CommandResult(
+                output=f"Invalid global value `{g_arg}`. Use: `on` | `off` | `_` (skip)",
+                is_markdown=True,
+            )
         if w_arg not in ("on", "off", "inherit", "_"):
-            return CommandResult(output=f"Invalid workspace value '{w_arg}'. Use: on | off | inherit | _ (skip)")
+            return CommandResult(
+                output=f"Invalid workspace value `{w_arg}`. Use: `on` | `off` | `inherit` | `_` (skip)",
+                is_markdown=True,
+            )
 
         from .config import write_config_toml, CONFIG_FILE
         msgs = []
@@ -325,7 +385,7 @@ class CommandHandler:
         if g_arg != "_":
             setattr(self.config.tools, tool, g_arg == "on")
             write_config_toml(self.config)
-            msgs.append(f"Global {tool} = {g_arg}  (saved to {CONFIG_FILE})")
+            msgs.append(f"Global `{tool}` = `{g_arg}` *(saved to `{CONFIG_FILE}`)*")
 
         if w_arg != "_" and self.tools is not None:
             ws = self.tools._load_workspace_tools()
@@ -334,30 +394,32 @@ class CommandHandler:
             else:
                 ws[tool] = (w_arg == "on")
             self.tools._save_workspace_tools(ws)
-            msgs.append(f"Workspace {tool} = {w_arg}  (saved to workspace .nanoharness/tools.json)")
+            msgs.append(f"Workspace `{tool}` = `{w_arg}` *(saved to `.nanoharness/tools.json`)*")
 
         if not msgs:
-            return CommandResult(output="Nothing changed (both columns skipped with '_').")
-        return CommandResult(output="\n".join(msgs))
+            return CommandResult(
+                output="Nothing changed (both columns skipped with `_`).",
+                is_markdown=True,
+            )
+        return CommandResult(output="\n\n".join(msgs), is_markdown=True)
 
     def _config_tools_show(self) -> str:
-        """List all tools with global and workspace enable state."""
+        """List all tools with global and workspace enable state as a markdown table."""
         ws = self.tools._load_workspace_tools() if self.tools else {}
-        lines = ["Tools  (global / workspace):"]
+        rows = ["## Tools", "", "| Tool | Global | Workspace | Effective |", "|------|--------|-----------|-----------|"]
         for name in TOOL_NAMES:
             g_val = getattr(self.config.tools, name, True)
             g = "on" if g_val else "off"
-            if name in ws:
-                w = "on" if ws[name] else "off"
-            else:
-                w = "inherit"
+            w = ("on" if ws[name] else "off") if name in ws else "inherit"
             eff = "on" if ws.get(name, g_val) else "off"
-            lines.append(f"  {name:<15} {g:<6} / {w:<10} →  {eff}")
-        lines.append("")
-        lines.append("Interactive editor: /config tools  (TUI only)")
-        lines.append("Set values:  /config tools <tool> [global] [workspace]")
-        lines.append("             Values: on | off | _ (skip); workspace also accepts inherit")
-        return "\n".join(lines)
+            rows.append(f"| `{name}` | {g} | {w} | {eff} |")
+        rows += [
+            "",
+            "Set: `/config tools <tool> [global] [workspace]` — values: `on` | `off` | `_` skip; workspace also accepts `inherit`",
+            "",
+            "*TUI interactive editor: type `/config tools` with no arguments.*",
+        ]
+        return "\n".join(rows)
 
     def _config_theme_command(self, rest: list[str]) -> CommandResult:
         """Handle /config theme [light|dark|auto]."""
@@ -368,7 +430,8 @@ class CommandHandler:
         value = rest[0].lower()
         if value not in THEME_OPTIONS:
             return CommandResult(
-                output=f"Invalid theme '{value}'. Use: light | dark | auto"
+                output=f"Invalid theme `{value}`. Use: `light` | `dark` | `auto`",
+                is_markdown=True,
             )
         self.config.ui.theme = value
         from .config import write_config_toml, CONFIG_FILE

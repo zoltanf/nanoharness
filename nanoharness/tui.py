@@ -775,10 +775,12 @@ class NanoHarnessApp(App):
                         ))
                         spinner.start("Thinking" if self.agent.config.model.thinking else "Processing")
 
-                    case "markup":
+                    case "markdown":
                         spinner.stop()
                         await _finalize_widgets()
-                        self._append_chat(ev.text, markup=True)
+                        md_widget = MarkdownWidget(ev.text, classes="chat-msg")
+                        await chat_log.mount(md_widget)
+                        md_widget.scroll_visible()
 
                     case "theme":
                         new_theme = "textual-light" if self.agent.config.ui.theme == "light" else "textual-dark"
