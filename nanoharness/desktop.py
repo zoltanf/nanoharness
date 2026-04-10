@@ -139,6 +139,7 @@ def main_desktop() -> int:
         height=800,
         resizable=True,
         min_size=(800, 600),
+        text_select=True,
     )
     webview.start(debug=config.debug)
     # Server thread is daemon — terminates with the process

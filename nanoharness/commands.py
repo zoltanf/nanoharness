@@ -30,35 +30,50 @@ class CommandResult:
 HELP_TEXT = """\
 ## Commands
 
-- `/think [on|off|once]` — Toggle thinking mode; append to a message for one turn
 - `/safety [confirm|workspace|none]` — Show or set safety level for this session
 - `/workspace [DIR]` — Show or switch workspace directory
+- `/think [on|off|once]` — Toggle thinking mode; append to a message for one turn
+- `!<cmd>` — Run a shell command directly (e.g. `!ls -la`)
+- `/clear` — Clear conversation history
+
+- `/todo add TEXT` — Add a task
+- `/todo done ID` | `/todo remove ID` — Complete or remove a task by ID
+- `/todo [list|clear]` — Show or clear the task list
+
+- `/info [prompt|context|tools]` — Show model details, system prompt/context breakdown, or available tools
 - `/code` — Open workspace in VS Code
 - `/lazygit` — Open lazygit in a new terminal window
-- `/clear` — Clear conversation history
+
 - `/config` — Show current configuration
 - `/config set KEY VAL` — Edit a config value (saved to `~/.nanoharness/config.toml`)
 - `/config tools` — Show tool enable/disable state *(TUI: opens interactive editor)*
 - `/config tools TOOL [G] [W]` — Set global (G) and/or workspace (W) enable for a tool — values: `on` | `off` | `_` skip; workspace also accepts `inherit`
-- `/info [prompt|context|tools]` — Show model details, system prompt/context breakdown, or available tools
+
 - `/pull [model|all]` — Pull a model (defaults to current); `all` pulls every local model
 - `/update ollama` — Update Ollama to the latest version
 - `/update models` — Pull all local models (alias for `/pull all`)
-- `/todo [list|clear]` — Show or clear the task list
-- `/todo add TEXT` — Add a task
-- `/todo done ID` | `/todo remove ID` — Complete or remove a task by ID
-- `/quit` | `/exit` — Exit NanoHarness
-- `!<cmd>` — Run a shell command directly (e.g. `!ls -la`)
 
-## Key bindings
+- `/quit` | `/exit` — Exit NanoHarness
+
+## Key bindings — TUI
 
 - `Enter` — Send message
 - `Ctrl+J` — Insert newline
 - `Tab` — Autocomplete command or path
 - `PageUp` / `PageDown` — Scroll chat history
 - `Home` / `End` — Jump to top / bottom of chat
+- `Ctrl+C` — Copy selected text
 - `Escape` — Interrupt running agent
-- `Ctrl+C` — Quit
+- `Ctrl+Q` — Quit
+
+## Key bindings — Web / Desktop App
+
+- `Enter` — Send message
+- `Shift+Enter` / `Alt+Enter` / `Ctrl+J` — Insert newline
+- `Tab` — Autocomplete command or path
+- `Up` / `Down` — Navigate input history
+- `Escape` — Interrupt running agent
+- `Cmd+C` / `Ctrl+C` — Copy selected text (standard browser/OS behavior)
 """
 
 _LINUX_TERMINALS = [

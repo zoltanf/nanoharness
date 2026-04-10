@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .config import CONFIG_KEYS, THEME_OPTIONS, TOOL_NAMES  # noqa: F401 — re-exported for callers
 
-COMMANDS = ["/think", "/workspace", "/code", "/lazygit", "/clear", "/config", "/info", "/pull", "/update", "/todo", "/help", "/quit", "/exit", "/safety"]
+COMMANDS = ["/safety", "/workspace", "/think", "/clear", "/todo", "/info", "/code", "/lazygit", "/config", "/pull", "/update", "/help", "/quit", "/exit"]
 
 THINK_OPTIONS = ["on", "off", "once"]
 SAFETY_OPTIONS = ["workspace", "confirm", "none"]
@@ -106,20 +106,20 @@ def command_send_error(line: str) -> str:
 
 # Maps each command to (arg_hint, description)
 COMMAND_HINTS: dict[str, tuple[str, str]] = {
-    "/think":     ("on|off|once",               "Toggle thinking mode"),
+    "/safety":    ("confirm|workspace|none",    "Set session safety level"),
     "/workspace": ("<dir>",                     "Switch workspace directory"),
+    "/think":     ("on|off|once",               "Toggle thinking mode"),
+    "/clear":     ("",                          "Clear conversation history"),
+    "/todo":      ("[list|clear|add|done|remove]", "Manage task list"),
+    "/info":      ("[prompt|context|tools]",      "Show model info, system prompt/context, or available tools"),
     "/code":      ("",                          "Open workspace in VS Code"),
     "/lazygit":   ("",                          "Open lazygit in a new terminal window"),
-    "/clear":     ("",                          "Clear conversation history"),
     "/config":    ("[tools | set KEY VAL]",       "Show/edit config or tool enables"),
-    "/info":      ("[prompt|context|tools]",      "Show model info, system prompt/context, or available tools"),
     "/pull":      ("[model|all]",                "Pull a model; 'all' pulls every local model"),
     "/update":    ("ollama|models",             "Update Ollama binary or pull all local models"),
-    "/todo":      ("[list|clear|add|done|remove]", "Manage task list"),
     "/help":      ("",                          "Show available commands"),
     "/quit":      ("",                          "Exit NanoHarness"),
     "/exit":      ("",                          "Exit NanoHarness"),
-    "/safety":    ("confirm|workspace|none",    "Set session safety level"),
 }
 
 

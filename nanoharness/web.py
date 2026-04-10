@@ -140,6 +140,12 @@ def create_app(
                         fut.set_result(bool(data.get("allowed", False)))
                     continue
 
+                if msg_type == "interrupt":
+                    if _agent_task and not _agent_task.done():
+                        _agent_task.cancel()
+                    await websocket.send_json({"type": "done", "text": ""})
+                    continue
+
                 if msg_type != "input":
                     continue
                 text = data.get("text", "").strip()
@@ -317,14 +323,16 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     --btn-fg: #ffffff;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; height: 100vh; display: flex; flex-direction: column; }
+  body { background: var(--bg); color: var(--fg); font-family: var(--font); font-size: 14px; height: 100vh; overflow: clip; }
 
-  /* Chat area — centered column matching bottom panel width */
-  #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
-  #chat > * { width: 100%; max-width: 860px; }
+  /* Chat area — full viewport height so scrollbar spans the whole window */
+  #chat { height: 100vh; overflow-y: auto; padding: 16px 48px 140px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  #chat > * { width: 100%; max-width: 796px; }
+  /* Floor strip — blocks chat content from showing in the gap below the fixed panel */
+  #chat-floor { position: fixed; bottom: 0; left: 0; right: 0; height: 16px; background: var(--bg); z-index: 99; }
 
-  /* Bottom panel — centered rounded card containing hint + input + status */
-  #bottom-panel { max-width: 860px; width: calc(100% - 32px); margin: 0 auto 16px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; flex-shrink: 0; background: var(--bg); }
+  /* Bottom panel — fixed overlay at the bottom so it doesn't shrink the scroll track */
+  #bottom-panel { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); max-width: 860px; width: calc(100% - 32px); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--bg); z-index: 100; }
 
   /* Status bar — flex row of column cells with right-border separators */
   #status { display: flex; align-items: stretch; font-size: 11px; border-top: 1px solid var(--border); background: var(--bg2); }
@@ -363,10 +371,13 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .msg-assistant .content blockquote { border-left: 3px solid var(--border); padding-left: 12px; color: var(--fg-dim); }
 
   /* Tool call/result */
-  .tool-call { border-left: 3px solid var(--yellow); background: var(--bg2); border-radius: 0 var(--radius) var(--radius) 0; padding: 8px 12px; margin: 2px 0; font-family: var(--mono); font-size: 13px; }
+  .tool-call { border-left: 3px solid var(--yellow); background: var(--bg2); border-radius: 0 var(--radius) var(--radius) 0; padding: 8px 12px; font-family: var(--mono); font-size: 13px; }
   .tool-call .name { color: var(--yellow); font-weight: 600; }
   .tool-call .args { color: var(--fg-dim); }
-  .tool-result { border-left: 3px solid var(--green); background: var(--bg2); border-radius: 0 var(--radius) var(--radius) 0; padding: 8px 12px; margin: 2px 0; font-family: var(--mono); font-size: 12px; color: var(--green); white-space: pre-wrap; word-break: break-all; }
+  .tool-result { border-left: 3px solid var(--green); background: var(--bg2); border-radius: 0 var(--radius) var(--radius) 0; padding: 8px 12px; font-family: var(--mono); font-size: 12px; color: var(--green); white-space: pre-wrap; word-break: break-all; }
+  /* Paired call+result share a .tool-group container (single flex item → no gap between them) */
+  .tool-group > .tool-call { border-radius: 0 var(--radius) 0 0; }
+  .tool-group > .tool-result { border-radius: 0 0 var(--radius) 0; }
 
   /* Thinking */
   .thinking { color: var(--fg-dim); font-style: italic; font-size: 13px; }
@@ -399,11 +410,9 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .msg-markdown th { background: var(--bg3); font-weight: 600; color: var(--fg); }
 
   /* Spinner */
-  .spinner { display: flex; align-items: center; gap: 8px; color: var(--fg-dim); font-size: 13px; padding: 4px 0; }
-  .spinner-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity: .3; transform: scale(.8); } 50% { opacity: 1; transform: scale(1.2); } }
-  .spinner-dot:nth-child(2) { animation-delay: .15s; }
-  .spinner-dot:nth-child(3) { animation-delay: .3s; }
+  .spinner { display: flex; align-items: center; gap: 7px; color: var(--fg-dim); font-size: 12px; padding: 4px 0; }
+  .spinner-ring { width: 12px; height: 12px; border: 1.5px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   /* Hint line — border only when visible so it doesn't bleed through as a phantom line when collapsed */
   #hint-line { padding: 0 16px; font-size: 13px; color: var(--fg-dim); font-family: var(--mono); overflow: hidden; transition: max-height 0.1s, padding 0.1s; }
@@ -539,6 +548,7 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
+<div id="chat-floor"></div>
 <span id="status-ws" style="display:none">connecting...</span>
 
 <!-- Tools config modal -->
@@ -607,6 +617,7 @@ let currentContentEl = null;
 let currentThinkingEl = null;
 let renderPending = false;
 let progressEl = null;
+let currentToolGroup = null;
 let history = [];
 let historyIdx = -1;
 
@@ -818,7 +829,7 @@ function handleEvent(ev) {
       scheduleScroll();
       break;
 
-    case 'tool_call':
+    case 'tool_call': {
       hideSpinner();
       flushAssistant();
       const tc = document.createElement('div');
@@ -829,10 +840,14 @@ function handleEvent(ev) {
         return k + '=' + JSON.stringify(vs);
       }).join(', ') : '';
       tc.innerHTML = '<span class="name">&gt; ' + esc(ev.tool_name) + '</span>(<span class="args">' + esc(argsStr) + '</span>)';
-      chat.appendChild(tc);
+      currentToolGroup = document.createElement('div');
+      currentToolGroup.className = 'tool-group';
+      currentToolGroup.appendChild(tc);
+      chat.appendChild(currentToolGroup);
       showSpinner('Running ' + ev.tool_name);
       scrollBottom();
       break;
+    }
 
     case 'tool_result': {
       hideSpinner();
@@ -852,7 +867,12 @@ function handleEvent(ev) {
         display = preview + (notice ? '\n' + notice : '');
       }
       tr.textContent = display;
-      chat.appendChild(tr);
+      if (currentToolGroup) {
+        currentToolGroup.appendChild(tr);
+        currentToolGroup = null;
+      } else {
+        chat.appendChild(tr);
+      }
       if (ev.tool_name === 'todo') updateStatus();
       showSpinner(thinkingEnabled ? 'Thinking' : 'Processing');
       scrollBottom();
@@ -1048,7 +1068,7 @@ function showSpinner(label) {
   hideSpinner();
   spinnerEl = document.createElement('div');
   spinnerEl.className = 'spinner';
-  spinnerEl.innerHTML = '<div class="spinner-dot"></div><div class="spinner-dot"></div><div class="spinner-dot"></div> ' + esc(label || 'Thinking') + '...';
+  spinnerEl.innerHTML = '<div class="spinner-ring"></div>' + esc(label || 'Thinking') + '...';
   chat.appendChild(spinnerEl);
   scrollBottom();
 }
@@ -1117,19 +1137,19 @@ function sendMessage() {
 
 // --- Inline hints & tab completion ---
 const hintEl = document.getElementById('hint-line');
-const COMMANDS = ['/think', '/workspace', '/code', '/lazygit', '/clear', '/config', '/info', '/pull', '/update', '/todo', '/safety', '/help', '/quit', '/exit'];
+const COMMANDS = ['/safety', '/workspace', '/think', '/clear', '/todo', '/info', '/code', '/lazygit', '/config', '/pull', '/update', '/help', '/quit', '/exit'];
 const COMMAND_HINTS = {
-  '/think':     ['on|off|once',               'Toggle thinking mode'],
+  '/safety':    ['confirm|workspace|none',    'Set session safety level'],
   '/workspace': ['<dir>',                     'Switch workspace directory'],
+  '/think':     ['on|off|once',               'Toggle thinking mode'],
+  '/clear':     ['',                          'Clear conversation history'],
+  '/todo':      ['[list|clear|add|done|remove]','Manage task list'],
+  '/info':      ['[prompt|context|tools]',      'Show model info, system prompt/context, or available tools'],
   '/code':      ['',                          'Open workspace in VS Code'],
   '/lazygit':   ['',                          'Open lazygit in a new terminal window'],
-  '/clear':     ['',                          'Clear conversation history'],
   '/config':    ['[tools | theme | set KEY VAL]', 'Show/edit config or tool enables'],
-  '/info':      ['[prompt|context|tools]',      'Show model info, system prompt/context, or available tools'],
   '/pull':      ['[model|all]',               "Pull a model; 'all' pulls every local model"],
   '/update':    ['ollama|models',             'Update Ollama binary or pull all local models'],
-  '/todo':      ['[list|clear|add|done|remove]','Manage task list'],
-  '/safety':    ['confirm|workspace|none',    'Set session safety level'],
   '/help':      ['',                          'Show available commands'],
   '/quit':      ['',                          'Exit NanoHarness'],
   '/exit':      ['',                          'Exit NanoHarness'],
@@ -1330,6 +1350,18 @@ input.addEventListener('keydown', (e) => {
     if (historyIdx < history.length - 1) { historyIdx++; input.value = history[historyIdx]; }
     else { historyIdx = history.length; input.value = ''; }
     updateHint();
+  }
+});
+
+// Global ESC → interrupt streaming response
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !processing) return;
+  const confirmOpen = !!document.getElementById('confirm-overlay');
+  const toolsOpen = document.getElementById('tools-modal-overlay')?.style.display !== 'none';
+  if (confirmOpen || toolsOpen) return;
+  e.preventDefault();
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'interrupt' }));
   }
 });
 

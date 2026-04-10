@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -562,7 +563,7 @@ class NanoHarnessApp(App):
     """
 
     BINDINGS = [
-        Binding("ctrl+c", "quit", "Quit", show=True),
+        Binding("ctrl+q", "quit", "Quit", show=True),
         Binding("escape", "interrupt", "Interrupt", show=True),
     ]
 
@@ -572,6 +573,18 @@ class NanoHarnessApp(App):
         self.title = "NanoHarness"
         self._processing = False
         self._agent_worker: Worker | None = None
+
+    def copy_to_clipboard(self, text: str) -> None:
+        """Copy text to clipboard, using pbcopy on macOS for Terminal.app compatibility."""
+        super().copy_to_clipboard(text)
+        if sys.platform == "darwin":
+            import subprocess
+            try:
+                subprocess.Popen(
+                    ["pbcopy"], stdin=subprocess.PIPE,
+                ).communicate(text.encode("utf-8"))
+            except OSError:
+                pass
 
     def compose(self) -> ComposeResult:
         yield VerticalScroll(id="chat-log")
