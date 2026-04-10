@@ -378,12 +378,9 @@ class ToolExecutor:
         """Return only explicitly-set workspace overrides {name: bool}. Absent = inherit."""
         if self._ws_tools_cache is not None:
             return self._ws_tools_cache
-        if not self._tools_file.is_file():
-            self._ws_tools_cache = {}
-            return self._ws_tools_cache
         try:
             self._ws_tools_cache = json.loads(self._tools_file.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
             self._ws_tools_cache = {}
         return self._ws_tools_cache
 
@@ -408,12 +405,40 @@ class ToolExecutor:
                 result.append(schema)
         return result
 
+    def get_tool_states(self, tools_config: Any) -> dict[str, dict]:
+        """Return {name: {"global": bool, "workspace": bool|None, "effective": bool}} for all tools."""
+        ws = self._load_workspace_tools()
+        names = [s["function"]["name"] for s in TOOL_SCHEMAS]
+        return {
+            name: {
+                "global": getattr(tools_config, name, True),
+                "workspace": ws.get(name, None),
+                "effective": ws[name] if name in ws else getattr(tools_config, name, True),
+            }
+            for name in names
+        }
+
+    def set_workspace_tool(self, name: str, value: bool | None) -> None:
+        """Set a single workspace tool override. None = remove override (inherit)."""
+        ws = self._load_workspace_tools()
+        if value is None:
+            ws.pop(name, None)
+        else:
+            ws[name] = value
+        self._save_workspace_tools(ws)
+
+    def set_workspace_tools(self, state: dict[str, bool | None]) -> None:
+        """Bulk-set workspace tool overrides. None values remove overrides."""
+        self._save_workspace_tools(state)
+
+    def todo(self, action: str, task: str | None = None, task_id: int | None = None) -> str:
+        """Public interface for todo operations."""
+        return self._todo(action, task, task_id)
+
     def _load_todo(self) -> list[dict]:
-        if not self._todo_file.is_file():
-            return []
         try:
             return json.loads(self._todo_file.read_text())
-        except (json.JSONDecodeError, OSError):
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
             return []
 
     def _save_todo(self, tasks: list[dict]) -> None:

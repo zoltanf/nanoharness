@@ -301,22 +301,22 @@ class CommandHandler:
 
         match sub:
             case "" | "list":
-                output = self._todo_list_to_md(self.tools._todo("list"))
+                output = self._todo_list_to_md(self.tools.todo("list"))
                 return CommandResult(output=output, is_markdown=True, refresh_status=True)
             case "clear":
-                output = self.tools._todo("clear")
+                output = self.tools.todo("clear")
             case "add":
                 if not rest:
                     return CommandResult(output="Usage: `/todo add <task text>`", is_markdown=True)
-                output = self.tools._todo("add", task=rest)
+                output = self.tools.todo("add", task=rest)
             case "done":
                 try:
-                    output = self.tools._todo("complete", task_id=int(rest))
+                    output = self.tools.todo("complete", task_id=int(rest))
                 except ValueError:
                     return CommandResult(output="Usage: `/todo done <id>`", is_markdown=True)
             case "remove":
                 try:
-                    output = self.tools._todo("remove", task_id=int(rest))
+                    output = self.tools.todo("remove", task_id=int(rest))
                 except ValueError:
                     return CommandResult(output="Usage: `/todo remove <id>`", is_markdown=True)
             case _:
@@ -403,12 +403,7 @@ class CommandHandler:
             msgs.append(f"Global `{tool}` = `{g_arg}` *(saved to `{CONFIG_FILE}`)*")
 
         if w_arg != "_" and self.tools is not None:
-            ws = self.tools._load_workspace_tools()
-            if w_arg == "inherit":
-                ws.pop(tool, None)
-            else:
-                ws[tool] = (w_arg == "on")
-            self.tools._save_workspace_tools(ws)
+            self.tools.set_workspace_tool(tool, None if w_arg == "inherit" else (w_arg == "on"))
             msgs.append(f"Workspace `{tool}` = `{w_arg}` *(saved to `.nanoharness/tools.json`)*")
 
         if not msgs:
@@ -420,13 +415,19 @@ class CommandHandler:
 
     def _config_tools_show(self) -> str:
         """List all tools with global and workspace enable state as a markdown table."""
-        ws = self.tools._load_workspace_tools() if self.tools else {}
+        if self.tools:
+            states = self.tools.get_tool_states(self.config.tools)
+        else:
+            states = {
+                n: {"global": getattr(self.config.tools, n, True), "workspace": None,
+                    "effective": getattr(self.config.tools, n, True)}
+                for n in TOOL_NAMES
+            }
         rows = ["## Tools", "", "| Tool | Global | Workspace | Effective |", "|------|--------|-----------|-----------|"]
-        for name in TOOL_NAMES:
-            g_val = getattr(self.config.tools, name, True)
-            g = "on" if g_val else "off"
-            w = ("on" if ws[name] else "off") if name in ws else "inherit"
-            eff = "on" if ws.get(name, g_val) else "off"
+        for name, s in states.items():
+            g = "on" if s["global"] else "off"
+            w = ("on" if s["workspace"] else "off") if s["workspace"] is not None else "inherit"
+            eff = "on" if s["effective"] else "off"
             rows.append(f"| `{name}` | {g} | {w} | {eff} |")
         rows += [
             "",

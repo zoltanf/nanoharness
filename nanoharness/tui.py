@@ -408,10 +408,9 @@ class ToolsModal(ModalScreen):
     def __init__(self, agent: "Agent") -> None:
         super().__init__()
         self._agent = agent
-        cfg = agent.config.tools
-        self._global: dict[str, bool] = {n: getattr(cfg, n, True) for n in TOOL_NAMES}
-        ws = agent.tools._load_workspace_tools()
-        self._workspace: dict[str, bool | None] = {n: ws.get(n, None) for n in TOOL_NAMES}
+        states = agent.tools.get_tool_states(agent.config.tools)
+        self._global: dict[str, bool] = {n: s["global"] for n, s in states.items()}
+        self._workspace: dict[str, bool | None] = {n: s["workspace"] for n, s in states.items()}
         self._row: int = 0
         self._col: int = 0  # 0 = global, 1 = workspace
 
@@ -495,7 +494,7 @@ class ToolsModal(ModalScreen):
         for name in TOOL_NAMES:
             setattr(cfg, name, self._global[name])
         write_config_toml(self._agent.config)
-        self._agent.tools._save_workspace_tools(self._workspace)
+        self._agent.tools.set_workspace_tools(self._workspace)
         self.app.pop_screen()
 
 

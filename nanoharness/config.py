@@ -98,10 +98,11 @@ class Config:
 
 
 def _load_toml(path: Path) -> dict:
-    if not path.is_file():
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (FileNotFoundError, OSError):
         return {}
-    with open(path, "rb") as f:
-        return tomllib.load(f)
 
 
 def _apply_toml(cfg: Config, data: dict) -> None:

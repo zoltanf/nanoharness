@@ -7,7 +7,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from typing import AsyncIterator, Any
+from typing import AsyncIterator, Any, Literal
 
 import platform
 import shutil
@@ -53,10 +53,17 @@ def _parse_code_blocks(text: str) -> list[tuple[str, str]]:
     return [(lang.lower() or "bash", code.strip()) for lang, code in blocks if code.strip()]
 
 
+EventType = Literal[
+    "content", "thinking", "tool_call", "tool_result",
+    "status", "error", "done", "progress", "markdown", "theme",
+    "_tool_calls_raw", "_eval_count", "_prompt_eval_count",
+]
+
+
 @dataclass
 class StreamEvent:
     """Events emitted by the agent during processing."""
-    type: str  # "content" | "thinking" | "tool_call" | "tool_result" | "done" | "error" | "status" | "progress" | "markdown"
+    type: EventType
     text: str = ""
     tool_name: str = ""
     tool_args: dict = field(default_factory=dict)

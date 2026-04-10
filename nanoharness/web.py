@@ -233,11 +233,10 @@ def create_app(
     @app.get("/api/config/tools")
     async def get_tools_config():
         """Return current global and workspace tool enable/disable state."""
-        tools_cfg = agent.config.tools
-        ws = agent.tools._load_workspace_tools()
+        states = agent.tools.get_tool_states(agent.config.tools)
         return {"tools": {
-            name: {"global": getattr(tools_cfg, name, True), "workspace": ws.get(name, None)}
-            for name in TOOL_NAMES
+            name: {"global": s["global"], "workspace": s["workspace"]}
+            for name, s in states.items()
         }}
 
     @app.post("/api/config/tools")
@@ -259,11 +258,11 @@ def create_app(
                 ws_update[name] = entry["workspace"]
         if global_changed:
             write_config_toml(agent.config)
-        agent.tools._save_workspace_tools(ws_update)
-        ws_fresh = agent.tools._load_workspace_tools()
+        agent.tools.set_workspace_tools(ws_update)
+        states = agent.tools.get_tool_states(agent.config.tools)
         return {"tools": {
-            name: {"global": getattr(tools_cfg, name, True), "workspace": ws_fresh.get(name, None)}
-            for name in TOOL_NAMES
+            name: {"global": s["global"], "workspace": s["workspace"]}
+            for name, s in states.items()
         }}
 
     return app
