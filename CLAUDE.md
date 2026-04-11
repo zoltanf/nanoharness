@@ -36,6 +36,18 @@ uv run --extra playwright playwright install chromium
 
 # Coverage report
 uv run --extra test pytest tests/ --cov=nanoharness --cov-report=term-missing
+
+# Build macOS distributables
+# Apple Silicon defaults to x86_64 then arm64; Intel defaults to x86_64
+./scripts/build-macos.sh
+
+# Build + notarize all generated macOS architectures
+./scripts/release-macos.sh
+
+# Publish release assets and update the Homebrew tap (requires gh auth)
+gh auth login -h github.com
+./scripts/publish-github-release.sh
+./scripts/publish-homebrew-tap.sh
 ```
 
 ## Architecture

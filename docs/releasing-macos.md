@@ -55,15 +55,21 @@ Unsigned local build:
 ./scripts/build-macos.sh
 ```
 
-By default this attempts both `x86_64` and `arm64` on Apple Silicon so one run can prepare the release assets for the app bundle, the installer, and Homebrew.
+By default this attempts `x86_64` and then `arm64` on Apple Silicon, and `x86_64` only on Intel Macs, so one run can prepare the release assets for the app bundle, the installer, and Homebrew.
 
 This uses `uv run --extra app --extra build ...` under the hood, so the Python runtime and app dependencies are bundled into the frozen outputs. End users do not need Python or uv installed.
 
-The script drives separate per-architecture uv environments automatically. On Apple Silicon, the `x86_64` pass requires Rosetta plus an Intel-capable `uv` binary. `build-macos.sh` automatically prefers `/usr/local/bin/uv` for that pass when it exists. If it does not find one, it will try to install an Intel-capable `uv` into your user bin with Rosetta Python on the first run. The Intel build then uses a uv-managed `x86_64` Python inside `build/macos/managed-python/` so it does not accidentally reuse the arm64 Homebrew interpreter. If your Intel `uv` lives somewhere else, point the script at it:
+The script drives separate per-architecture uv environments automatically. On Apple Silicon, the `x86_64` pass requires Rosetta plus an Intel-capable `uv` binary. `build-macos.sh` automatically prefers `/usr/local/bin/uv` for that pass when it exists. If it does not find one, it will try to install an Intel-capable `uv` into your user bin with Rosetta Python on the first run. The Intel build then uses a uv-managed `x86_64` Python inside `build/macos/managed-python/x86_64/` so it does not accidentally reuse the arm64 Homebrew interpreter. That first Intel pass may need network access. If your Intel `uv` lives somewhere else, point the script at it:
 
 ```bash
 export NANOHARNESS_UV_BIN_X86_64="/usr/local/bin/uv"
 ./scripts/build-macos.sh
+```
+
+If Rosetta is missing, install it first:
+
+```bash
+softwareupdate --install-rosetta
 ```
 
 If you only want a single-architecture build:
@@ -121,6 +127,7 @@ Or build + notarize in one step:
 After building, upload the Homebrew assets to the source repository release with:
 
 ```bash
+gh auth login -h github.com
 ./scripts/publish-github-release.sh
 ```
 
@@ -138,6 +145,7 @@ The release uploader reads `build/macos/artifacts.list` and uploads all generate
 Create or update the Homebrew tap repository with:
 
 ```bash
+gh auth login -h github.com
 ./scripts/publish-homebrew-tap.sh
 ```
 
@@ -174,7 +182,7 @@ Or open `System Settings` -> `Privacy & Security`, scroll to the bottom, and cli
 - `NANOHARNESS_APP_NAME`: Defaults to `NanoHarness`.
 - `NANOHARNESS_CLI_NAME`: Defaults to `nanoh`.
 - `NANOHARNESS_BUNDLE_ID`: Defaults to `com.nanoharness.app`.
-- `NANOHARNESS_TARGET_ARCHES`: Defaults to `arm64 x86_64`.
+- `NANOHARNESS_TARGET_ARCHES`: Defaults to `x86_64 arm64` on Apple Silicon and `x86_64` on Intel.
 - `NANOHARNESS_TARGET_ARCH`: Single-architecture override used for compatibility with older local flows.
 - `NANOHARNESS_UV_BIN`: Override the default `uv` binary path.
 - `NANOHARNESS_UV_BIN_ARM64`: Override the `uv` binary used for the `arm64` build.

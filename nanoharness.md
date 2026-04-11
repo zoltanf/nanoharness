@@ -37,3 +37,9 @@ It acts as an autonomous loop that can interact with your local system to perfor
 * **LLM Backend:** Ollama (via raw `httpx` against `/api/chat`)
 * **Interfaces:** Textual (TUI), FastAPI + WebSocket (Web UI), plain stdin/stdout (REPL)
 * **Testing:** pytest with `asyncio_mode = "auto"`, Playwright for browser tests
+
+### Packaging & Distribution
+
+* **macOS packaging:** `./scripts/build-macos.sh` builds `NanoHarness.app`, `nanoh`, per-architecture `.pkg` installers, and Homebrew release archives.
+* **Apple Silicon default build flow:** builds `x86_64` first, then `arm64`, and can bootstrap Intel `uv` plus a managed `x86_64` Python automatically when needed.
+* **Homebrew:** the generated release assets can be published with `./scripts/publish-github-release.sh` and `./scripts/publish-homebrew-tap.sh`, after `gh auth login -h github.com`.
