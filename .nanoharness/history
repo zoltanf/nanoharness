@@ -12,3 +12,5 @@
 "!ls"
 "!ls -a"
 "/exit"
+"/config theme auto"
+"/exit"

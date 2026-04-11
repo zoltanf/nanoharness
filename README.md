@@ -147,7 +147,7 @@ Option B: System Settings
 
 Open `System Settings` -> `Privacy & Security`, scroll to the bottom, and click `Open Anyway` for `NanoHarness.app`.
 
-The macOS build chain now creates both `arm64` and `x86_64` outputs by default. A local build writes the app bundle, CLI, and installer into architecture-specific folders:
+The macOS build chain now creates both `x86_64` and `arm64` outputs by default on Apple Silicon. A local build writes the app bundle, CLI, and installer into architecture-specific folders:
 
 - `dist/macos/arm64/`
 - `dist/macos/x86_64/`
@@ -162,7 +162,7 @@ Run a local build with:
 
 The generated build version uses local time and looks like `2026.04.11.1229`.
 
-On Apple Silicon, the `x86_64` pass needs Rosetta plus an `x86_64`-capable `uv` binary. If your default `uv` is arm64-only, point the script at the Intel one:
+On Apple Silicon, `build-macos.sh` automatically prefers `/usr/local/bin/uv` for the `x86_64` pass when that binary exists. If it does not find one, it will try to install an Intel-capable `uv` into your user bin with Rosetta Python on the first run. The Intel build then uses a uv-managed `x86_64` Python in the build directory so it does not accidentally pick up your arm64 Homebrew interpreter. If your Intel `uv` lives somewhere else, point the script at it:
 
 ```bash
 export NANOHARNESS_UV_BIN_X86_64="/usr/local/bin/uv"

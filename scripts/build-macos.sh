@@ -12,12 +12,22 @@ fi
 APP_NAME="${NANOHARNESS_APP_NAME:-NanoHarness}"
 CLI_NAME="${NANOHARNESS_CLI_NAME:-nanoh}"
 BUNDLE_ID="${NANOHARNESS_BUNDLE_ID:-com.nanoharness.app}"
-TARGET_ARCH_INPUT="${NANOHARNESS_TARGET_ARCHES:-${NANOHARNESS_TARGET_ARCH:-arm64 x86_64}}"
+if [[ -n "${NANOHARNESS_TARGET_ARCHES:-}" ]]; then
+  TARGET_ARCH_INPUT="$NANOHARNESS_TARGET_ARCHES"
+elif [[ -n "${NANOHARNESS_TARGET_ARCH:-}" ]]; then
+  TARGET_ARCH_INPUT="$NANOHARNESS_TARGET_ARCH"
+elif [[ "$(uname -m)" == "arm64" ]]; then
+  TARGET_ARCH_INPUT="x86_64 arm64"
+else
+  TARGET_ARCH_INPUT="x86_64"
+fi
 TARGET_ARCH_INPUT="${TARGET_ARCH_INPUT//,/ }"
 CODESIGN_IDENTITY="${NANOHARNESS_CODESIGN_IDENTITY:-}"
 INSTALLER_IDENTITY="${NANOHARNESS_INSTALLER_IDENTITY:-}"
 UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/uv-cache}"
 DEFAULT_UV_BIN="${NANOHARNESS_UV_BIN:-$(command -v uv || true)}"
+DEFAULT_X86_64_UV_BIN="${NANOHARNESS_UV_BIN_X86_64:-}"
+MANAGED_PYTHON_VERSION="${NANOHARNESS_MANAGED_PYTHON_VERSION:-3.14}"
 
 BUILD_ROOT="$ROOT/build/macos"
 DIST_ROOT="$ROOT/dist/macos"
@@ -27,6 +37,7 @@ ICONSET_DIR="$ASSETS_ROOT/${APP_NAME}.iconset"
 ARTIFACTS_ENV="$BUILD_ROOT/artifacts.env"
 ARTIFACTS_LIST="$BUILD_ROOT/artifacts.list"
 SHA256SUMS_PATH="$DIST_ROOT/SHA256SUMS.txt"
+MANAGED_PYTHON_ROOT="$BUILD_ROOT/managed-python"
 
 TARGET_ARCHES=()
 for arch in $TARGET_ARCH_INPUT; do
@@ -43,6 +54,28 @@ if [[ -z "$DEFAULT_UV_BIN" ]]; then
   exit 1
 fi
 
+x86_64_user_base() {
+  arch -x86_64 /usr/bin/python3 -m site --user-base 2>/dev/null | tail -n 1
+}
+
+refresh_x86_64_uv_bin() {
+  local user_base
+  if [[ -n "${NANOHARNESS_UV_BIN_X86_64:-}" ]]; then
+    DEFAULT_X86_64_UV_BIN="$NANOHARNESS_UV_BIN_X86_64"
+    return
+  fi
+  if [[ -x "/usr/local/bin/uv" ]]; then
+    DEFAULT_X86_64_UV_BIN="/usr/local/bin/uv"
+    return
+  fi
+  user_base="$(x86_64_user_base || true)"
+  if [[ -n "$user_base" && -x "$user_base/bin/uv" ]]; then
+    DEFAULT_X86_64_UV_BIN="$user_base/bin/uv"
+    return
+  fi
+  DEFAULT_X86_64_UV_BIN=""
+}
+
 uv_bin_for_arch() {
   local target_arch="$1"
   case "$target_arch" in
@@ -50,13 +83,19 @@ uv_bin_for_arch() {
       printf '%s\n' "${NANOHARNESS_UV_BIN_ARM64:-$DEFAULT_UV_BIN}"
       ;;
     x86_64)
-      printf '%s\n' "${NANOHARNESS_UV_BIN_X86_64:-$DEFAULT_UV_BIN}"
+      if [[ -n "$DEFAULT_X86_64_UV_BIN" ]]; then
+        printf '%s\n' "$DEFAULT_X86_64_UV_BIN"
+      else
+        printf '%s\n' "$DEFAULT_UV_BIN"
+      fi
       ;;
     *)
       printf '%s\n' "$DEFAULT_UV_BIN"
       ;;
   esac
 }
+
+refresh_x86_64_uv_bin
 
 run_uv_host() {
   local uv_bin="$DEFAULT_UV_BIN"
@@ -79,13 +118,78 @@ can_run_arch() {
 run_uv_arch() {
   local target_arch="$1"
   local uv_bin
+  local -a extra_args=()
+  local -a env_args=()
   uv_bin="$(uv_bin_for_arch "$target_arch")"
   shift
-  env \
-    UV_CACHE_DIR="$UV_CACHE_DIR" \
-    UV_PROJECT_ENVIRONMENT="$BUILD_ROOT/uv-env-$target_arch" \
-    arch "-$target_arch" "$uv_bin" run "$@"
+  env_args+=(
+    UV_CACHE_DIR="$UV_CACHE_DIR"
+    UV_PROJECT_ENVIRONMENT="$BUILD_ROOT/uv-env-$target_arch"
+  )
+  if [[ "$target_arch" == "x86_64" ]]; then
+    env_args+=(
+      UV_PYTHON_INSTALL_DIR="$MANAGED_PYTHON_ROOT/$target_arch"
+    )
+    extra_args+=(
+      --managed-python
+      --python "$MANAGED_PYTHON_VERSION"
+    )
+  fi
+  if [[ "$target_arch" == "x86_64" ]]; then
+    env "${env_args[@]}" \
+      arch "-$target_arch" "$uv_bin" run "${extra_args[@]}" "$@"
+  else
+    env "${env_args[@]}" \
+      arch "-$target_arch" "$uv_bin" run "$@"
+  fi
 }
+
+ensure_x86_64_uv() {
+  local user_base
+  local uv_bin
+
+  if [[ "$(uname -m)" != "arm64" ]]; then
+    return
+  fi
+  refresh_x86_64_uv_bin
+  uv_bin="$(uv_bin_for_arch x86_64)"
+  if [[ -n "$uv_bin" && -x "$uv_bin" ]] && arch -x86_64 "$uv_bin" --version >/dev/null 2>&1; then
+    return
+  fi
+
+  if ! arch -x86_64 /usr/bin/python3 -V >/dev/null 2>&1; then
+    echo "Unable to start /usr/bin/python3 under x86_64. Install Rosetta first with: softwareupdate --install-rosetta" >&2
+    exit 1
+  fi
+
+  echo "  bootstrapping x86_64 uv with Rosetta Python..."
+  user_base="$(x86_64_user_base || true)"
+  if [[ -z "$user_base" ]]; then
+    echo "Unable to determine the x86_64 Python user base for bootstrapping uv." >&2
+    exit 1
+  fi
+
+  mkdir -p "$BUILD_ROOT/pip-cache-x86_64"
+  if ! env \
+      PIP_CACHE_DIR="$BUILD_ROOT/pip-cache-x86_64" \
+      PIP_DISABLE_PIP_VERSION_CHECK=1 \
+      PIP_REQUIRE_VIRTUALENV=0 \
+      arch -x86_64 /usr/bin/python3 -m pip install --user --upgrade uv; then
+    echo "Unable to install an x86_64 uv automatically. Install an Intel-capable uv at /usr/local/bin/uv or set NANOHARNESS_UV_BIN_X86_64 manually." >&2
+    exit 1
+  fi
+
+  refresh_x86_64_uv_bin
+  uv_bin="$(uv_bin_for_arch x86_64)"
+  if [[ -z "$uv_bin" || ! -x "$uv_bin" ]] || ! arch -x86_64 "$uv_bin" --version >/dev/null 2>&1; then
+    echo "x86_64 uv bootstrap completed, but the resulting binary could not be executed. Set NANOHARNESS_UV_BIN_X86_64 manually." >&2
+    exit 1
+  fi
+}
+
+if [[ "$(uname -m)" == "arm64" && " ${TARGET_ARCHES[*]} " == *" x86_64 "* ]]; then
+  ensure_x86_64_uv
+fi
 
 SEEN_ARCHES=""
 for arch in "${TARGET_ARCHES[@]}"; do
@@ -102,7 +206,11 @@ for arch in "${TARGET_ARCHES[@]}"; do
   fi
   if ! can_run_arch "$arch"; then
     if [[ "$arch" == "x86_64" && "$(uname -m)" == "arm64" ]]; then
-      echo "Unable to run uv under x86_64. Install Rosetta, provide an x86_64-capable uv via NANOHARNESS_UV_BIN_X86_64, or set NANOHARNESS_TARGET_ARCHES=arm64." >&2
+      if [[ -n "$DEFAULT_X86_64_UV_BIN" ]]; then
+        echo "Unable to run uv under x86_64 with $DEFAULT_X86_64_UV_BIN. Install Rosetta, verify that binary is Intel-capable, or set NANOHARNESS_TARGET_ARCHES=arm64." >&2
+      else
+        echo "Unable to run uv under x86_64. Install Rosetta and an Intel-capable uv at /usr/local/bin/uv, provide one via NANOHARNESS_UV_BIN_X86_64, or set NANOHARNESS_TARGET_ARCHES=arm64." >&2
+      fi
     else
       echo "Unable to run uv under $arch on this machine. Set NANOHARNESS_TARGET_ARCHES to a supported subset." >&2
     fi
@@ -149,6 +257,13 @@ echo "Building NanoHarness ${NANOHARNESS_BUILD_VERSION}"
 echo "  app: ${APP_NAME}.app"
 echo "  cli: ${CLI_NAME}"
 echo "  archs: ${TARGET_ARCHES[*]}"
+if [[ " ${TARGET_ARCHES[*]} " == *" x86_64 "* ]]; then
+  echo "  x86_64 uv: $(uv_bin_for_arch x86_64)"
+  echo "  x86_64 python: managed ${MANAGED_PYTHON_VERSION}"
+fi
+if [[ " ${TARGET_ARCHES[*]} " == *" arm64 "* ]]; then
+  echo "  arm64 uv: $(uv_bin_for_arch arm64)"
+fi
 
 rm -rf "$BUILD_ROOT" "$DIST_ROOT"
 mkdir -p "$ASSETS_ROOT" "$DIST_ROOT"
@@ -185,7 +300,6 @@ for TARGET_ARCH in "${TARGET_ARCHES[@]}"; do
     --clean
     --distpath "$ARCH_DIST_ROOT"
     --workpath "$ARCH_BUILD_ROOT/pyinstaller/work"
-    --target-architecture "$TARGET_ARCH"
   )
 
   run_uv_arch "$TARGET_ARCH" --extra app --extra build pyinstaller "${PYI_ARGS[@]}" "$ROOT/packaging/NanoHarness-app.spec"

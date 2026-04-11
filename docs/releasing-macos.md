@@ -55,11 +55,11 @@ Unsigned local build:
 ./scripts/build-macos.sh
 ```
 
-By default this attempts both `arm64` and `x86_64` so one run can prepare the release assets for the app bundle, the installer, and Homebrew.
+By default this attempts both `x86_64` and `arm64` on Apple Silicon so one run can prepare the release assets for the app bundle, the installer, and Homebrew.
 
 This uses `uv run --extra app --extra build ...` under the hood, so the Python runtime and app dependencies are bundled into the frozen outputs. End users do not need Python or uv installed.
 
-The script drives separate per-architecture uv environments automatically. On Apple Silicon, the `x86_64` pass requires Rosetta plus an `x86_64`-capable `uv` binary. If your default `uv` is arm64-only, point the script at an Intel build of `uv`:
+The script drives separate per-architecture uv environments automatically. On Apple Silicon, the `x86_64` pass requires Rosetta plus an Intel-capable `uv` binary. `build-macos.sh` automatically prefers `/usr/local/bin/uv` for that pass when it exists. If it does not find one, it will try to install an Intel-capable `uv` into your user bin with Rosetta Python on the first run. The Intel build then uses a uv-managed `x86_64` Python inside `build/macos/managed-python/` so it does not accidentally reuse the arm64 Homebrew interpreter. If your Intel `uv` lives somewhere else, point the script at it:
 
 ```bash
 export NANOHARNESS_UV_BIN_X86_64="/usr/local/bin/uv"
@@ -179,6 +179,7 @@ Or open `System Settings` -> `Privacy & Security`, scroll to the bottom, and cli
 - `NANOHARNESS_UV_BIN`: Override the default `uv` binary path.
 - `NANOHARNESS_UV_BIN_ARM64`: Override the `uv` binary used for the `arm64` build.
 - `NANOHARNESS_UV_BIN_X86_64`: Override the `uv` binary used for the `x86_64` build.
+- `NANOHARNESS_MANAGED_PYTHON_VERSION`: Override the uv-managed Python version used for the `x86_64` build. Defaults to `3.14`.
 - `NANOHARNESS_CODESIGN_IDENTITY`: Developer ID Application identity.
 - `NANOHARNESS_INSTALLER_IDENTITY`: Developer ID Installer identity.
 - `NANOHARNESS_NOTARY_PROFILE`: notarytool keychain profile name.
