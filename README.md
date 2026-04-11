@@ -119,23 +119,71 @@ uv run --extra test --extra playwright --extra web pytest tests/ -v
 uv run --extra playwright playwright install chromium
 ```
 
-## macOS packaging
+## macOS install and release
 
-NanoHarness includes a macOS build chain that produces:
+Install the packaged app with Homebrew:
 
-- `NanoHarness.app`
-- `nanoh`
-- `NanoHarness-<version>.pkg`
+```bash
+brew tap zoltanf/nanoharness
+brew install --cask nanoharness
+```
 
-Run an unsigned local build with:
+Install just the terminal command:
+
+```bash
+brew tap zoltanf/nanoharness
+brew install nanoh
+```
+
+If macOS blocks the app on first launch because the build is not notarized yet, unblock it in one of these ways:
+
+Option A: Terminal
+
+```bash
+sudo xattr -r -d com.apple.quarantine "/Applications/NanoHarness.app"
+```
+
+Option B: System Settings
+
+Open `System Settings` -> `Privacy & Security`, scroll to the bottom, and click `Open Anyway` for `NanoHarness.app`.
+
+The macOS build chain now creates both `arm64` and `x86_64` outputs by default. A local build writes the app bundle, CLI, and installer into architecture-specific folders:
+
+- `dist/macos/arm64/`
+- `dist/macos/x86_64/`
+
+It also writes shared Homebrew assets and checksums at the top level of `dist/macos/`.
+
+Run a local build with:
 
 ```bash
 ./scripts/build-macos.sh
 ```
 
-The build version is generated automatically in local time and looks like `2026.04.11.1229`.
+The generated build version uses local time and looks like `2026.04.11.1229`.
 
-Release details, signing, and notarization steps live in [docs/releasing-macos.md](docs/releasing-macos.md).
+On Apple Silicon, the `x86_64` pass needs Rosetta plus an `x86_64`-capable `uv` binary. If your default `uv` is arm64-only, point the script at the Intel one:
+
+```bash
+export NANOHARNESS_UV_BIN_X86_64="/usr/local/bin/uv"
+./scripts/build-macos.sh
+```
+
+If you only want one architecture for a quick build:
+
+```bash
+export NANOHARNESS_TARGET_ARCHES="arm64"
+./scripts/build-macos.sh
+```
+
+To publish a release after building:
+
+```bash
+./scripts/publish-github-release.sh
+./scripts/publish-homebrew-tap.sh
+```
+
+For signing, notarization, and the full release flow, see [docs/releasing-macos.md](docs/releasing-macos.md).
 
 ## License
 
