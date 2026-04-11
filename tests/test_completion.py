@@ -353,9 +353,10 @@ class TestCompleteLine:
 
     def test_info_subcommand_completion(self, workspace: Path):
         """/info <partial> completes to subcommands."""
-        assert complete_line(workspace, "/info ") == ["/info prompt", "/info context", "/info tools"]
+        assert complete_line(workspace, "/info ") == ["/info prompt", "/info context", "/info tools", "/info benchmark"]
         assert complete_line(workspace, "/info p") == ["/info prompt"]
         assert complete_line(workspace, "/info t") == ["/info tools"]
+        assert complete_line(workspace, "/info b") == ["/info benchmark"]
         assert complete_line(workspace, "/info x") == []
 
     # --- Embedded /think mid-message ---

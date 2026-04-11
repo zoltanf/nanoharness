@@ -40,7 +40,7 @@ HELP_TEXT = """\
 - `/todo done ID` | `/todo remove ID` — Complete or remove a task by ID
 - `/todo [list|clear]` — Show or clear the task list
 
-- `/info [prompt|context|tools]` — Show model details, system prompt/context breakdown, or available tools
+- `/info [prompt|context|tools|benchmark]` — Show model details, system prompt/context breakdown, available tools, or run a token speed benchmark
 - `/code` — Open workspace in VS Code
 - `/lazygit` — Open lazygit in a new terminal window
 

@@ -45,6 +45,15 @@ FALLBACK_SYSTEM_PROMPT = (
     "Working directory: {workspace}"
 )
 
+_BENCHMARK_PROMPT = (
+    "Write a complete Python implementation of a Sudoku solver using recursive backtracking. "
+    "Include: a `solve(board)` function that modifies the board in-place and returns True/False, "
+    "a `is_valid(board, row, col, num)` helper, a `find_empty(board)` helper, "
+    "a `print_board(board)` helper, and a `main()` function with a sample puzzle and solution. "
+    "Add docstrings to all functions and type hints throughout. "
+    "The board is represented as a 9x9 list of lists with 0 for empty cells."
+)
+
 
 def _parse_code_blocks(text: str) -> list[tuple[str, str]]:
     """Extract fenced code blocks from text. Returns [(lang, code), ...]."""
@@ -387,6 +396,65 @@ class Agent:
         yield StreamEvent(type="markdown", text="\n\n".join(parts))
         yield StreamEvent(type="done")
 
+    async def _benchmark_command(self) -> AsyncIterator[StreamEvent]:
+        """Send a fixed coding prompt, stream the response, then report throughput stats."""
+        model = self.config.model.name
+        messages = [{"role": "user", "content": _BENCHMARK_PROMPT}]
+
+        yield StreamEvent(type="status", text=f"Benchmarking `{model}`…")
+
+        t0 = time.monotonic()
+        ttft: float | None = None
+        final_chunk = None
+
+        async for chunk in self.client.chat_stream(
+            messages, model, tools=None, think=False
+        ):
+            if chunk.content:
+                if ttft is None:
+                    ttft = time.monotonic() - t0
+                yield StreamEvent(type="content", text=chunk.content)
+            if chunk.done:
+                final_chunk = chunk
+
+        total_time = time.monotonic() - t0
+
+        # Build stats table
+        rows: list[tuple[str, str]] = [("Model", f"`{model}`")]
+
+        rows.append(("Time to first token", f"{ttft:.2f}s" if ttft is not None else "n/a"))
+        rows.append(("Total generation time", f"{total_time:.2f}s"))
+
+        if final_chunk:
+            eval_count = final_chunk.eval_count
+            prompt_eval_count = final_chunk.prompt_eval_count
+            eval_dur_ns = final_chunk.eval_duration
+            prompt_dur_ns = final_chunk.prompt_eval_duration
+            load_dur_ns = final_chunk.load_duration
+
+            rows.append(("Tokens generated", f"{eval_count:,}"))
+
+            if eval_dur_ns > 0:
+                gen_tps = eval_count / (eval_dur_ns / 1e9)
+                rows.append(("Generation speed", f"{gen_tps:.1f} tok/s"))
+            elif total_time > 0 and eval_count > 0:
+                rows.append(("Generation speed", f"{eval_count / total_time:.1f} tok/s (est.)"))
+
+            rows.append(("Prompt tokens", f"{prompt_eval_count:,}"))
+
+            if prompt_dur_ns > 0:
+                prompt_tps = prompt_eval_count / (prompt_dur_ns / 1e9)
+                rows.append(("Prompt eval speed", f"{prompt_tps:.1f} tok/s"))
+
+            rows.append(("Model load time", f"{load_dur_ns / 1e9:.2f}s"))
+
+        table_lines = ["## Benchmark Results", "", "| Metric | Value |", "|---|---|"]
+        for label, value in rows:
+            table_lines.append(f"| {label} | {value} |")
+
+        yield StreamEvent(type="markdown", text="\n".join(table_lines))
+        yield StreamEvent(type="done")
+
     async def _poll_reconnect(self, timeout: float = 30.0) -> bool:
         """Poll Ollama health until it responds or timeout expires. Returns True if reconnected."""
         deadline = time.monotonic() + timeout
@@ -727,6 +795,9 @@ class Agent:
                 lines += ["", "Use `/config tools` to enable or disable tools."]
                 yield StreamEvent(type="markdown", text="\n".join(lines))
                 yield StreamEvent(type="done")
+            elif subcmd == "benchmark":
+                async for ev in self._benchmark_command():
+                    yield ev
             else:
                 async for ev in self._info_command():
                     yield ev

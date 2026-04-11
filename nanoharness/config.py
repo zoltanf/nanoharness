@@ -35,6 +35,16 @@ WARN_DEBUG_ON = (
     "Debug logging is ON — tool arguments, file contents, and conversation messages "
     "are written to ~/.nanoharness/debug/"
 )
+WARN_FLASH_ATTENTION = (
+    "WARNING: OLLAMA_FLASH_ATTENTION is not enabled. "
+    "Set OLLAMA_FLASH_ATTENTION=1 for better performance and lower memory usage."
+)
+
+
+def flash_attention_enabled() -> bool:
+    """Check whether Ollama flash attention is enabled via environment."""
+    import os
+    return os.environ.get("OLLAMA_FLASH_ATTENTION", "0") == "1"
 
 
 @dataclass

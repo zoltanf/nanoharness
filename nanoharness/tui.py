@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -22,7 +23,8 @@ from rich.markup import escape
 from .completion import complete_line, hint_for_input, is_incomplete_command, command_send_error
 from .tools import format_confirm_preview, _count_lines
 from . import logging as dbg, BANNER as _BANNER, __version__
-from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON, TOOL_NAMES, write_config_toml
+from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON, WARN_FLASH_ATTENTION, TOOL_NAMES, write_config_toml, flash_attention_enabled
+from .history import InputHistory
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -79,9 +81,10 @@ class CompletingInput(TextArea):
             super().__init__()
             self.value = value
 
-    def __init__(self, agent: Agent, **kwargs: object) -> None:
+    def __init__(self, agent: Agent, history: InputHistory | None = None, **kwargs: object) -> None:
         super().__init__(show_line_numbers=False, soft_wrap=True, **kwargs)
         self._agent = agent
+        self._history = history
         self._tab_matches: list[str] = []
         self._tab_index: int = -1
         self._tab_prefix: str = ""
@@ -92,7 +95,12 @@ class CompletingInput(TextArea):
             if row == 0:
                 event.prevent_default()
                 event.stop()
-                self.app.query_one("#chat-log", VerticalScroll).scroll_up(animate=False)
+                if self._history is not None:
+                    result = self._history.navigate_up(self.text)
+                    if result is not None:
+                        self.load_text(result)
+                        self.cursor_location = (0, 0)
+                        self._reset_tab_state()
                 return
         if event.key == "down":
             lines = self.text.split("\n")
@@ -100,7 +108,14 @@ class CompletingInput(TextArea):
             if row >= len(lines) - 1:
                 event.prevent_default()
                 event.stop()
-                self.app.query_one("#chat-log", VerticalScroll).scroll_down(animate=False)
+                if self._history is not None:
+                    result = self._history.navigate_down()
+                    if result is not None:
+                        self.load_text(result)
+                        new_lines = result.split("\n")
+                        last_row = len(new_lines) - 1
+                        self.cursor_location = (last_row, len(new_lines[last_row]))
+                        self._reset_tab_state()
                 return
         if event.key == "enter":
             event.prevent_default()
@@ -130,6 +145,9 @@ class CompletingInput(TextArea):
             event.stop()
             self._do_tab_complete(reverse=True)
             return
+        self._reset_tab_state()
+
+    def _reset_tab_state(self) -> None:
         self._tab_matches = []
         self._tab_index = -1
         self._tab_prefix = ""
@@ -572,6 +590,7 @@ class NanoHarnessApp(App):
         self.title = "NanoHarness"
         self._processing = False
         self._agent_worker: Worker | None = None
+        self._history = InputHistory(agent.config.workspace / ".nanoharness" / "history")
 
     def copy_to_clipboard(self, text: str) -> None:
         """Copy text to clipboard, using pbcopy on macOS for Terminal.app compatibility."""
@@ -590,7 +609,7 @@ class NanoHarnessApp(App):
         with Vertical(id="bottom-panel"):
             yield SpinnerLine()
             yield HintLine()
-            yield CompletingInput(agent=self.agent)
+            yield CompletingInput(agent=self.agent, history=self._history)
             yield StatusBar(self.agent)
 
     def _append_chat(self, content, *, markup: bool = False) -> Static:
@@ -618,6 +637,10 @@ class NanoHarnessApp(App):
         if cfg.safety.level == "none":
             self._append_chat(Text.from_markup(
                 f"[bold red]WARNING:[/] [yellow]{escape(WARN_SAFETY_NONE[len('WARNING: '):])}[/]"
+            ))
+        if not flash_attention_enabled():
+            self._append_chat(Text.from_markup(
+                f"[bold yellow]WARNING:[/] [yellow]{escape(WARN_FLASH_ATTENTION[len('WARNING: '):])}[/]"
             ))
 
     async def on_mount(self) -> None:
@@ -653,11 +676,13 @@ class NanoHarnessApp(App):
 
         # Intercept /config tools (bare) to show interactive modal
         if user_input.lower() == "/config tools":
+            self._history.add(user_input)
             inp.load_text("")
             self.query_one(HintLine).set_hint("")
             self.push_screen(ToolsModal(self.agent))
             return
 
+        self._history.add(user_input)
         inp.load_text("")
         self.query_one(HintLine).set_hint("")
 

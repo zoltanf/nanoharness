@@ -13,7 +13,7 @@ try:
 except ImportError:
     readline = None  # type: ignore[assignment]
 
-from .config import load_config, parse_args, WARN_SAFETY_NONE, WARN_DEBUG_ON
+from .config import load_config, parse_args, WARN_SAFETY_NONE, WARN_DEBUG_ON, WARN_FLASH_ATTENTION, flash_attention_enabled
 from .tools import format_confirm_preview
 from . import BANNER as _BANNER, __version__
 from .ollama import OllamaClient
@@ -69,6 +69,8 @@ async def run_repl(agent: Agent) -> int:
         print(WARN_DEBUG_ON)
     if agent.config.safety.level == "none":
         print(WARN_SAFETY_NONE)
+    if not flash_attention_enabled():
+        print(WARN_FLASH_ATTENTION)
     print("Type /help for commands, /quit to exit.\n")
 
     while True:

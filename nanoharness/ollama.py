@@ -25,6 +25,10 @@ class ChatChunk:
     # Stats from final chunk
     eval_count: int = 0
     prompt_eval_count: int = 0
+    eval_duration: int = 0          # nanoseconds
+    prompt_eval_duration: int = 0   # nanoseconds
+    total_duration: int = 0         # nanoseconds
+    load_duration: int = 0          # nanoseconds
 
 
 @dataclass
@@ -275,6 +279,10 @@ class OllamaClient:
                         done_reason=data.get("done_reason", ""),
                         eval_count=data.get("eval_count", 0),
                         prompt_eval_count=data.get("prompt_eval_count", 0),
+                        eval_duration=data.get("eval_duration", 0),
+                        prompt_eval_duration=data.get("prompt_eval_duration", 0),
+                        total_duration=data.get("total_duration", 0),
+                        load_duration=data.get("load_duration", 0),
                     )
 
                     chunk_count += 1

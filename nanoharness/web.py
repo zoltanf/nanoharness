@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import html as _html
 import json
+import os
 import re
 import uuid
 import webbrowser
@@ -15,7 +16,7 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Requ
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from . import logging as log, BANNER as _BANNER, __version__
-from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON, TOOL_NAMES, write_config_toml
+from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON, WARN_FLASH_ATTENTION, TOOL_NAMES, write_config_toml, flash_attention_enabled
 from .tools import format_confirm_preview
 
 if TYPE_CHECKING:
@@ -66,6 +67,7 @@ def create_app(
         .replace("__TOOL_NAMES_JSON__", json.dumps(TOOL_NAMES))
         .replace("__SAFETY_WARNING_JSON__", json.dumps(WARN_SAFETY_NONE if cfg.safety.level == "none" else ""))
         .replace("__DEBUG_WARNING_JSON__", json.dumps(WARN_DEBUG_ON if cfg.debug else ""))
+        .replace("__FLASH_ATTN_WARNING_JSON__", json.dumps("" if flash_attention_enabled() else WARN_FLASH_ATTENTION))
     )
 
     _html_by_theme = {
@@ -609,6 +611,7 @@ let processing = false;
 let thinkingEnabled = __THINKING_ENABLED__;
 const SAFETY_WARNING = __SAFETY_WARNING_JSON__;
 const DEBUG_WARNING = __DEBUG_WARNING_JSON__;
+const FLASH_ATTN_WARNING = __FLASH_ATTN_WARNING_JSON__;
 let contentBuf = '';
 let thinkingBuf = '';
 let currentAssistantEl = null;
@@ -1143,7 +1146,7 @@ const COMMAND_HINTS = {
   '/think':     ['on|off|once',               'Toggle thinking mode'],
   '/clear':     ['',                          'Clear conversation history'],
   '/todo':      ['[list|clear|add|done|remove]','Manage task list'],
-  '/info':      ['[prompt|context|tools]',      'Show model info, system prompt/context, or available tools'],
+  '/info':      ['[prompt|context|tools|benchmark]', 'Show model info, system prompt/context, tools, or run a speed benchmark'],
   '/code':      ['',                          'Open workspace in VS Code'],
   '/lazygit':   ['',                          'Open lazygit in a new terminal window'],
   '/config':    ['[tools | theme | set KEY VAL]', 'Show/edit config or tool enables'],
@@ -1156,7 +1159,7 @@ const COMMAND_HINTS = {
 const THINK_OPTIONS = ['on', 'off', 'once'];
 const SAFETY_OPTIONS = ['confirm', 'workspace', 'none'];
 const UPDATE_OPTIONS = ['ollama', 'models'];
-const INFO_OPTIONS = ['prompt', 'context', 'tools'];
+const INFO_OPTIONS = ['prompt', 'context', 'tools', 'benchmark'];
 const TOOL_NAMES = ['bash', 'read_file', 'write_file', 'list_files', 'python_exec', 'todo', 'fetch_webpage'];
 const THEME_OPTIONS = ['light', 'dark', 'auto'];
 
@@ -1403,6 +1406,12 @@ async function initWelcome() {
     dbgEl.className = 'msg-warning';
     dbgEl.textContent = DEBUG_WARNING;
     frag.appendChild(dbgEl);
+  }
+  if (FLASH_ATTN_WARNING) {
+    const faEl = document.createElement('div');
+    faEl.className = 'msg-warning';
+    faEl.textContent = FLASH_ATTN_WARNING;
+    frag.appendChild(faEl);
   }
   chat.appendChild(frag);
   // Fetch Ollama version asynchronously after rendering banner

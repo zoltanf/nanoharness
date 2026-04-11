@@ -12,7 +12,7 @@ THINK_OPTIONS = ["on", "off", "once"]
 SAFETY_OPTIONS = ["workspace", "confirm", "none"]
 _THINK_VALID = ("on", "off", "once", "true", "false", "yes", "no")
 _UPDATE_SUBCMDS = ("ollama", "models")
-_INFO_SUBCMDS = ("prompt", "context", "tools")
+_INFO_SUBCMDS = ("prompt", "context", "tools", "benchmark")
 
 
 def is_incomplete_command(line: str) -> bool:
@@ -100,7 +100,7 @@ def command_send_error(line: str) -> str:
         if cmd_part == "/update":
             return _arg_error(_UPDATE_SUBCMDS, "ollama | models")
         if cmd_part == "/info":
-            return _arg_error(_INFO_SUBCMDS, "prompt | context | tools")
+            return _arg_error(_INFO_SUBCMDS, "prompt | context | tools | benchmark")
 
     return "Invalid command syntax."
 
@@ -111,7 +111,7 @@ COMMAND_HINTS: dict[str, tuple[str, str]] = {
     "/think":     ("on|off|once",               "Toggle thinking mode"),
     "/clear":     ("",                          "Clear conversation history"),
     "/todo":      ("[list|clear|add|done|remove]", "Manage task list"),
-    "/info":      ("[prompt|context|tools]",      "Show model info, system prompt/context, or available tools"),
+    "/info":      ("[prompt|context|tools|benchmark]", "Show model info, system prompt/context, tools, or run a speed benchmark"),
     "/code":      ("",                          "Open workspace in VS Code"),
     "/lazygit":   ("",                          "Open lazygit in a new terminal window"),
     "/config":    ("[tools | set KEY VAL]",       "Show/edit config or tool enables"),
