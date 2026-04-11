@@ -1,6 +1,6 @@
 import random
 
-__version__ = "0.2.0"
+from ._version import __version__
 
 BANNER = ("""
 
@@ -15,7 +15,7 @@ BANNER = ("""
 )
 
 
-BANNER2 = ("""
+BANNER2 = (r"""
 
   _   _                     _    _
  | \ | |                   | |  | |
@@ -45,7 +45,7 @@ BANNER3 = ("""
 )
 
 
-BANNER4 = ("""
+BANNER4 = (r"""
 
 ,--.  ,--.                           ,--.  ,--.
 |  ,'.|  | ,--,--.,--,--,  ,---.     |  '--'  | ,--,--.,--.--.,--,--,  ,---.  ,---.  ,---.

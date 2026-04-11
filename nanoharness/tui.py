@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,7 +24,16 @@ from rich.markup import escape
 from .completion import complete_line, hint_for_input, is_incomplete_command, command_send_error
 from .tools import format_confirm_preview, _count_lines
 from . import logging as dbg, BANNER as _BANNER, __version__
-from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON, WARN_FLASH_ATTENTION, TOOL_NAMES, write_config_toml, flash_attention_enabled
+from .config import (
+    WARN_SAFETY_NONE,
+    WARN_DEBUG_ON,
+    WARN_FLASH_ATTENTION,
+    TOOL_NAMES,
+    flash_attention_enabled,
+    load_recent_workspaces,
+    save_recent_workspace,
+    write_config_toml,
+)
 from .history import InputHistory
 
 if TYPE_CHECKING:
@@ -45,6 +55,17 @@ def _ui_clip_notice(ui_shown: int, ui_clipped: bool, model_shown: int, lines_tot
     # Model saw all lines (no backend truncation), or read_file (lines_total == 0).
     n = lines_total if lines_total > 0 else model_shown
     return f"[{ui_shown}/{n} lines shown · model: all]" if ui_clipped else f"[{n} lines · all]"
+
+
+def _display_path(path: str | Path) -> str:
+    """Shorten a path for display by replacing the home prefix with ``~``."""
+    resolved = str(Path(path).expanduser().resolve())
+    home = str(Path.home().resolve())
+    if resolved == home:
+        return "~"
+    if resolved.startswith(home + os.sep):
+        return "~" + resolved[len(home):]
+    return resolved
 
 
 class HintLine(Static):
@@ -151,6 +172,13 @@ class CompletingInput(TextArea):
         self._tab_matches = []
         self._tab_index = -1
         self._tab_prefix = ""
+
+    def set_history(self, history: InputHistory | None) -> None:
+        """Swap the backing history store after a workspace change."""
+        self._history = history
+        if self._history is not None:
+            self._history.reset_navigation()
+        self._reset_tab_state()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """Update the hint line as the user types."""
@@ -271,7 +299,6 @@ class StatusBar(Static):
         self._update_text()
 
     def _update_text(self) -> None:
-        import os
         cfg = self.agent.config
 
         # --- model ---
@@ -300,10 +327,7 @@ class StatusBar(Static):
             think_val, think_style = "off", "dim"
 
         # --- workspace (shorten ~) ---
-        ws = str(cfg.workspace)
-        home = os.path.expanduser("~")
-        if ws.startswith(home):
-            ws = "~" + ws[len(home):]
+        ws = _display_path(cfg.workspace)
 
         # --- todo (own column) ---
         next_task, progress = self.agent.tools.get_todo_parts()
@@ -395,6 +419,90 @@ class ConfirmModal(ModalScreen):
             self._future.set_result(False)
         except asyncio.InvalidStateError:
             pass
+        self.app.pop_screen()
+
+
+class WorkspaceModal(ModalScreen):
+    """Recent-workspace picker for the TUI."""
+
+    CSS = """
+    WorkspaceModal {
+        align: center middle;
+    }
+    #workspace-box {
+        width: 84;
+        height: auto;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    BINDINGS = [
+        Binding("up", "move_up", show=False),
+        Binding("down", "move_down", show=False),
+        Binding("enter", "select", show=False),
+        Binding("escape", "close", show=False),
+    ]
+
+    def __init__(self, current_workspace: Path, on_select: Callable[[Path], None]) -> None:
+        super().__init__()
+        self._current_workspace = current_workspace.resolve()
+        self._on_select = on_select
+        self._paths = [Path(path).resolve() for path in load_recent_workspaces()]
+        self._row = next(
+            (i for i, path in enumerate(self._paths) if path == self._current_workspace),
+            0,
+        )
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="workspace-box"):
+            yield Static(id="workspace-content")
+
+    def on_mount(self) -> None:
+        self._update_display()
+
+    def _update_display(self) -> None:
+        lines: list[str] = [
+            "[bold cyan]Recent Workspaces[/]",
+            "",
+        ]
+
+        if not self._paths:
+            lines.append("  [dim](No recent workspaces)[/]")
+        else:
+            for i, path in enumerate(self._paths):
+                marker = "[bold cyan]>[/]" if i == self._row else " "
+                current_markup = " [dim](current)[/]" if path == self._current_workspace else ""
+                lines.append(f" {marker} {escape(_display_path(path))}{current_markup}")
+
+        lines += [
+            "",
+            f"  [dim]Current:[/] {escape(_display_path(self._current_workspace))}",
+            "",
+            "  [dim]↑↓ move  Enter select  Esc cancel[/]",
+        ]
+        self.query_one("#workspace-content", Static).update(Text.from_markup("\n".join(lines)))
+
+    def action_move_up(self) -> None:
+        if not self._paths:
+            return
+        self._row = (self._row - 1) % len(self._paths)
+        self._update_display()
+
+    def action_move_down(self) -> None:
+        if not self._paths:
+            return
+        self._row = (self._row + 1) % len(self._paths)
+        self._update_display()
+
+    def action_select(self) -> None:
+        if not self._paths:
+            return
+        self._on_select(self._paths[self._row])
+        self.app.pop_screen()
+
+    def action_close(self) -> None:
         self.app.pop_screen()
 
 
@@ -617,7 +725,10 @@ class NanoHarnessApp(App):
         chat = self.query_one("#chat-log", VerticalScroll)
         widget = Static(content, markup=markup, classes="chat-msg")
         chat.mount(widget)
-        widget.scroll_visible()
+        # Scroll after the next layout pass so newly-mounted widgets, including
+        # large tool results, reliably move the viewport to the bottom.
+        self.call_after_refresh(widget.scroll_visible)
+        self.call_after_refresh(self._scroll_chat)
         return widget
 
     def _scroll_chat(self) -> None:
@@ -642,6 +753,23 @@ class NanoHarnessApp(App):
             self._append_chat(Text.from_markup(
                 f"[bold yellow]WARNING:[/] [yellow]{escape(WARN_FLASH_ATTENTION[len('WARNING: '):])}[/]"
             ))
+
+    def _sync_workspace_state(self) -> None:
+        """Refresh TUI widgets that are scoped to the active workspace."""
+        self._history = InputHistory(self.agent.config.workspace / ".nanoharness" / "history")
+        inp = self.query_one(CompletingInput)
+        inp.set_history(self._history)
+        self.query_one(StatusBar).refresh_status()
+
+    def _set_workspace(self, new_path: Path) -> None:
+        """Apply a workspace change initiated directly by the TUI."""
+        resolved = new_path.expanduser().resolve()
+        if not resolved.is_dir():
+            return
+        self.agent.config.workspace = resolved
+        self.agent._apply_workspace()
+        save_recent_workspace(resolved)
+        self._sync_workspace_state()
 
     async def on_mount(self) -> None:
         if self.agent.config.ui.theme == "light":
@@ -674,7 +802,14 @@ class NanoHarnessApp(App):
                 self.query_one(HintLine).set_hint(err)
             return
 
-        # Intercept /config tools (bare) to show interactive modal
+        # Intercept bare TUI-only commands to show interactive modals.
+        if user_input.lower() == "/workspace":
+            self._history.add(user_input)
+            inp.load_text("")
+            self.query_one(HintLine).set_hint("")
+            self.push_screen(WorkspaceModal(self.agent.config.workspace, self._set_workspace))
+            return
+
         if user_input.lower() == "/config tools":
             self._history.add(user_input)
             inp.load_text("")
@@ -831,6 +966,8 @@ class NanoHarnessApp(App):
                             self._show_welcome()
                         else:
                             self._append_chat(Text.from_markup(f"[bold]{escape(ev.text)}[/]"))
+                            if ev.text.startswith("Workspace changed to:"):
+                                self._sync_workspace_state()
                         status_bar.refresh_status()
 
                     case "error":

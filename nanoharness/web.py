@@ -6,6 +6,7 @@ import asyncio
 import html as _html
 import json
 import os
+from pathlib import Path
 import re
 import uuid
 import webbrowser
@@ -16,7 +17,11 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Requ
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from . import logging as log, BANNER as _BANNER, __version__
-from .config import WARN_SAFETY_NONE, WARN_DEBUG_ON, WARN_FLASH_ATTENTION, TOOL_NAMES, write_config_toml, flash_attention_enabled
+from .config import (
+    WARN_SAFETY_NONE, WARN_DEBUG_ON, WARN_FLASH_ATTENTION, TOOL_NAMES,
+    write_config_toml, flash_attention_enabled,
+    load_recent_workspaces, save_recent_workspace,
+)
 from .tools import format_confirm_preview
 
 if TYPE_CHECKING:
@@ -68,6 +73,8 @@ def create_app(
         .replace("__SAFETY_WARNING_JSON__", json.dumps(WARN_SAFETY_NONE if cfg.safety.level == "none" else ""))
         .replace("__DEBUG_WARNING_JSON__", json.dumps(WARN_DEBUG_ON if cfg.debug else ""))
         .replace("__FLASH_ATTN_WARNING_JSON__", json.dumps("" if flash_attention_enabled() else WARN_FLASH_ATTENTION))
+        .replace("__RECENT_WORKSPACES_JSON__", json.dumps(load_recent_workspaces()))
+        .replace("__HOME_DIR_JSON__", json.dumps(str(Path.home())))
     )
 
     _html_by_theme = {
@@ -266,6 +273,52 @@ def create_app(
             name: {"global": s["global"], "workspace": s["workspace"]}
             for name, s in states.items()
         }}
+
+    # ── Workspace picker endpoints ──────────────────────────────────────────
+
+    @app.post("/api/workspace")
+    async def set_workspace(request: Request):
+        """Validate and apply a new workspace directory."""
+        origin = request.headers.get("origin", "")
+        if not _origin_allowed(origin):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        body = await request.json()
+        raw_path = body.get("path", "").strip()
+        if not raw_path:
+            return {"ok": False, "error": "Path is required"}
+        new_path = Path(raw_path).expanduser().resolve()
+        if not new_path.is_dir():
+            return {"ok": False, "error": f"Not a directory: {new_path}"}
+        agent.config.workspace = new_path
+        agent._apply_workspace()
+        save_recent_workspace(new_path)
+        return {"ok": True, "path": str(new_path)}
+
+    @app.get("/api/browse")
+    async def browse_dirs(path: str = "~", hidden: bool = False):
+        """List child directories for the in-modal workspace browser."""
+        target = Path(path).expanduser().resolve()
+        home = Path.home().resolve()
+        try:
+            target.relative_to(home)
+        except ValueError:
+            if target != home:
+                return {"ok": False, "error": "Browsing is restricted to the home directory"}
+        if not target.is_dir():
+            return {"ok": False, "error": f"Not a directory: {target}"}
+        dirs: list[str] = []
+        try:
+            for entry in sorted(target.iterdir()):
+                if not entry.is_dir():
+                    continue
+                if not hidden and entry.name.startswith("."):
+                    continue
+                if not os.access(entry, os.R_OK | os.X_OK):
+                    continue
+                dirs.append(entry.name)
+        except PermissionError:
+            return {"ok": False, "error": f"Permission denied: {target}"}
+        return {"ok": True, "path": str(target), "dirs": dirs}
 
     return app
 
@@ -512,6 +565,97 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
   .t-ws-off     { background: var(--red);   color: #fff; border-color: var(--red); }
   .t-ws-inherit { background: var(--bg3);   color: var(--fg-dim); }
   .t-footer { margin-top: 14px; font-size: 11px; color: var(--fg-dim); line-height: 1.5; }
+
+  /* ── Workspace Picker Modal ─────────────────────────── */
+  #ws-modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.55);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 10000;
+  }
+  .w-box {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 24px 28px;
+    max-width: 560px; width: 90%;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+  }
+  .w-title {
+    font-weight: 700; font-size: 16px; color: var(--accent);
+    margin-bottom: 16px;
+  }
+  .w-input-row { display: flex; gap: 8px; margin-bottom: 4px; }
+  .w-input {
+    flex: 1; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 8px 12px; font-family: var(--mono); font-size: 13px;
+    outline: none;
+  }
+  .w-input:focus { border-color: var(--accent); }
+  .w-browse-btn, .w-confirm-btn {
+    border: none; border-radius: var(--radius); cursor: pointer;
+    font-size: 13px; font-weight: 600; color: #fff;
+  }
+  .w-browse-btn {
+    background: var(--bg3); color: var(--fg); padding: 8px 14px;
+    white-space: nowrap;
+  }
+  .w-browse-btn:hover { opacity: .85; }
+  .w-confirm-btn {
+    background: var(--green); padding: 10px 0; width: 100%;
+    margin-bottom: 16px;
+  }
+  .w-confirm-btn:hover { opacity: .85; }
+  .w-confirm-btn:disabled { opacity: .5; cursor: default; }
+  .w-error {
+    color: var(--red); font-size: 12px; min-height: 18px;
+    margin-bottom: 8px; padding-left: 2px;
+  }
+  .w-section-label {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--fg-dim); margin-bottom: 8px;
+  }
+  .w-recents {
+    max-height: 240px; overflow-y: auto;
+  }
+  .w-recent-item {
+    padding: 8px 12px; cursor: pointer; border-radius: 4px;
+    font-family: var(--mono); font-size: 13px; color: var(--fg);
+    word-break: break-all;
+  }
+  .w-recent-item:hover { background: var(--bg3); }
+  .w-no-recents { color: var(--fg-dim); font-size: 13px; padding: 8px 12px; }
+  .w-browse-panel { max-height: 300px; display: flex; flex-direction: column; }
+  .w-browse-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  }
+  .w-browse-back {
+    background: none; border: none; color: var(--accent); cursor: pointer;
+    font-size: 13px; padding: 4px 8px; border-radius: 4px;
+  }
+  .w-browse-back:hover { background: var(--bg3); }
+  .w-browse-path {
+    font-family: var(--mono); font-size: 12px; color: var(--fg-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1;
+  }
+  .w-browse-select {
+    background: var(--green); color: #fff; border: none; border-radius: var(--radius);
+    padding: 4px 12px; font-size: 12px; font-weight: 600; cursor: pointer;
+    white-space: nowrap;
+  }
+  .w-browse-select:hover { opacity: .85; }
+  .w-browse-dirs {
+    overflow-y: auto; flex: 1; max-height: 220px;
+  }
+  .w-browse-item {
+    padding: 6px 12px; cursor: pointer; border-radius: 4px;
+    font-family: var(--mono); font-size: 13px; color: var(--fg);
+  }
+  .w-browse-item:hover { background: var(--bg3); }
+  .w-browse-item::before { content: '\1F4C1 '; font-size: 12px; }
+  .w-hidden-toggle {
+    font-size: 12px; color: var(--fg-dim); margin-top: 8px;
+    display: flex; align-items: center; gap: 4px; cursor: pointer;
+  }
 </style>
 </head>
 <body>
@@ -569,6 +713,34 @@ HTML_TEMPLATE = r"""<!DOCTYPE html>
     </table>
     <div class="t-footer">
       Global: click to toggle on/off &nbsp;&middot;&nbsp; Workspace: click to cycle on / off / inherit
+    </div>
+  </div>
+</div>
+
+<!-- Workspace picker modal -->
+<div id="ws-modal-overlay" style="display:none">
+  <div class="w-box" role="dialog" aria-modal="true" aria-label="Choose Workspace">
+    <div class="w-title">Choose Workspace</div>
+    <div class="w-input-row">
+      <input type="text" id="ws-input" class="w-input" placeholder="Enter path or select below..." autocomplete="off" spellcheck="false">
+      <button class="w-browse-btn" id="ws-browse-btn" onclick="wsBrowse()">Browse</button>
+    </div>
+    <div id="ws-error" class="w-error"></div>
+    <button id="ws-confirm-btn" class="w-confirm-btn" onclick="wsConfirm()">Open Workspace</button>
+    <div id="ws-recents-panel">
+      <div class="w-section-label">Recent Workspaces</div>
+      <div id="ws-recents" class="w-recents"></div>
+    </div>
+    <div id="ws-browse-panel" class="w-browse-panel" style="display:none">
+      <div class="w-browse-header">
+        <button class="w-browse-back" onclick="wsShowRecents()">&#8592; Back</button>
+        <span id="ws-browse-path" class="w-browse-path"></span>
+        <button class="w-browse-select" onclick="wsBrowseSelect()">Select This Folder</button>
+      </div>
+      <div id="ws-browse-dirs" class="w-browse-dirs"></div>
+      <label class="w-hidden-toggle">
+        <input type="checkbox" id="ws-show-hidden" onchange="wsBrowseRefresh()"> Show hidden
+      </label>
     </div>
   </div>
 </div>
@@ -1385,7 +1557,7 @@ async function initWelcome() {
   frag.appendChild(bannerEl);
   const metaEl = document.createElement('div');
   metaEl.className = 'banner-meta';
-  metaEl.textContent = 'v' + APP_VERSION + ' \u2014 ' + __MODEL_NAME_JSON__ + ' \u2014 ' + __WORKSPACE_JSON__;
+  metaEl.textContent = 'v' + APP_VERSION + ' \u2014 ' + __MODEL_NAME_JSON__ + ' \u2014 ' + currentWorkspace;
   frag.appendChild(metaEl);
   const ollamaMetaEl = document.createElement('div');
   ollamaMetaEl.className = 'banner-meta';
@@ -1423,8 +1595,178 @@ async function initWelcome() {
   } catch(e) {}
 }
 
-initWelcome();
-connect();
+// ── Workspace Picker Modal ────────────────────────────────
+const RECENT_WORKSPACES = __RECENT_WORKSPACES_JSON__;
+const HOME_DIR = __HOME_DIR_JSON__;
+let currentWorkspace = __WORKSPACE_JSON__;
+let currentBrowsePath = HOME_DIR;
+
+function showWorkspaceModal() {
+  const overlay = document.getElementById('ws-modal-overlay');
+  overlay.style.display = 'flex';
+  const list = document.getElementById('ws-recents');
+  list.innerHTML = '';
+  if (RECENT_WORKSPACES.length === 0) {
+    const p = document.createElement('div');
+    p.className = 'w-no-recents';
+    p.textContent = '(No recent workspaces)';
+    list.appendChild(p);
+  } else {
+    for (const path of RECENT_WORKSPACES) {
+      const item = document.createElement('div');
+      item.className = 'w-recent-item';
+      item.textContent = path;
+      item.onclick = () => wsSelectRecent(path);
+      list.appendChild(item);
+    }
+  }
+  document.getElementById('ws-error').textContent = '';
+  const inp = document.getElementById('ws-input');
+  inp.value = '';
+  inp.focus();
+  document.addEventListener('keydown', wsKeyHandler);
+}
+
+function wsKeyHandler(e) {
+  if (e.key === 'Enter' && document.getElementById('ws-modal-overlay').style.display !== 'none') {
+    // Don't trigger if browse panel is active (Enter should not auto-confirm there)
+    if (document.getElementById('ws-browse-panel').style.display === 'none') {
+      e.preventDefault();
+      wsConfirm();
+    }
+  }
+}
+
+function wsSelectRecent(path) {
+  wsSetWorkspace(path);
+}
+
+async function wsConfirm() {
+  const val = document.getElementById('ws-input').value.trim();
+  if (!val) {
+    document.getElementById('ws-error').textContent = 'Please enter a workspace path';
+    return;
+  }
+  await wsSetWorkspace(val);
+}
+
+async function wsSetWorkspace(path) {
+  const btn = document.getElementById('ws-confirm-btn');
+  const browseBtn = document.getElementById('ws-browse-btn');
+  btn.disabled = true;
+  browseBtn.disabled = true;
+  document.getElementById('ws-error').textContent = '';
+  try {
+    const r = await fetch('/api/workspace', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      currentWorkspace = d.path;
+      const wsEl = document.getElementById('status-workspace');
+      if (wsEl) wsEl.textContent = d.path;
+      document.getElementById('ws-modal-overlay').style.display = 'none';
+      document.removeEventListener('keydown', wsKeyHandler);
+      initWelcome();
+      connect();
+    } else {
+      document.getElementById('ws-error').textContent = d.error || 'Invalid path';
+      btn.disabled = false;
+      browseBtn.disabled = false;
+    }
+  } catch(e) {
+    document.getElementById('ws-error').textContent = 'Connection error';
+    btn.disabled = false;
+    browseBtn.disabled = false;
+  }
+}
+
+async function wsBrowse() {
+  // Desktop mode: use native folder picker via pywebview
+  if (window.pywebview && window.pywebview.api && window.pywebview.api.pick_folder) {
+    try {
+      const result = await window.pywebview.api.pick_folder();
+      if (result) {
+        document.getElementById('ws-input').value = result;
+        document.getElementById('ws-error').textContent = '';
+      }
+    } catch(e) {}
+    return;
+  }
+  // Web mode: show in-modal directory browser
+  document.getElementById('ws-recents-panel').style.display = 'none';
+  document.getElementById('ws-browse-panel').style.display = 'flex';
+  const inp = document.getElementById('ws-input').value.trim();
+  const startPath = (inp && inp.startsWith(HOME_DIR)) ? inp : HOME_DIR;
+  await wsBrowseNavigate(startPath);
+}
+
+async function wsBrowseNavigate(path) {
+  currentBrowsePath = path;
+  const hidden = document.getElementById('ws-show-hidden').checked;
+  try {
+    const r = await fetch('/api/browse?path=' + encodeURIComponent(path) + '&hidden=' + hidden);
+    const d = await r.json();
+    if (!d.ok) {
+      document.getElementById('ws-browse-path').textContent = path;
+      const dirsEl = document.getElementById('ws-browse-dirs');
+      dirsEl.innerHTML = '';
+      const err = document.createElement('div');
+      err.className = 'w-no-recents';
+      err.textContent = d.error;
+      dirsEl.appendChild(err);
+      return;
+    }
+    currentBrowsePath = d.path;
+    document.getElementById('ws-browse-path').textContent = d.path;
+    const dirsEl = document.getElementById('ws-browse-dirs');
+    dirsEl.innerHTML = '';
+    // Add parent directory entry if not at home
+    if (d.path !== HOME_DIR) {
+      const parent = d.path.substring(0, d.path.lastIndexOf('/')) || '/';
+      const up = document.createElement('div');
+      up.className = 'w-browse-item';
+      up.textContent = '..';
+      up.onclick = () => wsBrowseNavigate(parent);
+      dirsEl.appendChild(up);
+    }
+    for (const name of d.dirs) {
+      const item = document.createElement('div');
+      item.className = 'w-browse-item';
+      item.textContent = name;
+      item.onclick = () => wsBrowseNavigate(d.path + '/' + name);
+      dirsEl.appendChild(item);
+    }
+    if (d.dirs.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'w-no-recents';
+      empty.textContent = '(Empty directory)';
+      dirsEl.appendChild(empty);
+    }
+  } catch(e) {
+    document.getElementById('ws-browse-path').textContent = path;
+  }
+}
+
+function wsBrowseRefresh() {
+  wsBrowseNavigate(currentBrowsePath);
+}
+
+function wsBrowseSelect() {
+  document.getElementById('ws-input').value = currentBrowsePath;
+  document.getElementById('ws-error').textContent = '';
+  wsShowRecents();
+}
+
+function wsShowRecents() {
+  document.getElementById('ws-browse-panel').style.display = 'none';
+  document.getElementById('ws-recents-panel').style.display = '';
+  document.getElementById('ws-input').focus();
+}
+
+showWorkspaceModal();
 
 // ── Tools Config Modal ────────────────────────────────────
 const TOOL_NAMES_JS = __TOOL_NAMES_JSON__;

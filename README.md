@@ -26,6 +26,8 @@ cd nanoharness
 uv sync
 ```
 
+If you install the package as a command-line tool, both `nanoharness` and `nanoh` point to the terminal entrypoint.
+
 ## Run
 
 ```bash
@@ -116,6 +118,24 @@ uv run --extra test --extra playwright --extra web pytest tests/ -v
 # Install Playwright browsers (one-time)
 uv run --extra playwright playwright install chromium
 ```
+
+## macOS packaging
+
+NanoHarness includes a macOS build chain that produces:
+
+- `NanoHarness.app`
+- `nanoh`
+- `NanoHarness-<version>.pkg`
+
+Run an unsigned local build with:
+
+```bash
+./scripts/build-macos.sh
+```
+
+The build version is generated automatically in local time and looks like `2026.04.11.1229`.
+
+Release details, signing, and notarization steps live in [docs/releasing-macos.md](docs/releasing-macos.md).
 
 ## License
 

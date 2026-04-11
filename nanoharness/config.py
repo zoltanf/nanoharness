@@ -10,6 +10,9 @@ from pathlib import Path
 
 CONFIG_DIR = Path.home() / ".nanoharness"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
+RECENT_WORKSPACES_FILE = CONFIG_DIR / "recent_workspaces.json"
+
+_MAX_RECENT_WORKSPACES = 20
 
 CONFIG_KEYS = [
     "model.name",
@@ -265,3 +268,37 @@ def load_config(argv: list[str] | None = None) -> tuple[Config, argparse.Namespa
     _apply_args(cfg, args)
 
     return cfg, args
+
+
+# ---------------------------------------------------------------------------
+# Recent workspaces persistence
+# ---------------------------------------------------------------------------
+
+def load_recent_workspaces() -> list[str]:
+    """Load recent workspace paths, filtering out directories that no longer exist."""
+    import json
+
+    try:
+        data = json.loads(RECENT_WORKSPACES_FILE.read_text())
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [p for p in data if isinstance(p, str) and Path(p).is_dir()][:_MAX_RECENT_WORKSPACES]
+
+
+def save_recent_workspace(path: str | Path) -> None:
+    """Push *path* to the top of the recent workspaces list (dedup, cap at 20)."""
+    import json
+
+    resolved = str(Path(path).resolve())
+    recents = load_recent_workspaces()
+    # Remove duplicate if present, then prepend
+    recents = [p for p in recents if p != resolved]
+    recents.insert(0, resolved)
+    recents = recents[:_MAX_RECENT_WORKSPACES]
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        RECENT_WORKSPACES_FILE.write_text(json.dumps(recents))
+    except OSError:
+        pass

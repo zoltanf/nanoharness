@@ -6,6 +6,7 @@ import asyncio
 import sys
 import threading
 import time
+from pathlib import Path
 
 
 def _wait_for_server(url: str, timeout: float = 10.0) -> bool:
@@ -38,6 +39,30 @@ def _run_uvicorn(agent, host: str, port: int) -> None:
     cfg = uvicorn.Config(app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(cfg)
     asyncio.run(server.serve())
+
+
+class _JsApi:
+    """JavaScript-callable API exposed to the pywebview window."""
+
+    _window = None  # set after create_window()
+
+    def pick_folder(self):
+        """Open native folder picker dialog. Returns path string or None."""
+        import webview
+        if self._window is None:
+            return None
+        dialog_type = (
+            webview.FileDialog.FOLDER
+            if hasattr(webview, "FileDialog")
+            else webview.FOLDER_DIALOG
+        )
+        result = self._window.create_file_dialog(
+            dialog_type,
+            directory=str(Path.home()),
+        )
+        if result and len(result) > 0:
+            return result[0]
+        return None
 
 
 def main_desktop() -> int:
@@ -132,7 +157,8 @@ def main_desktop() -> int:
         )
         return 1
 
-    webview.create_window(
+    js_api = _JsApi()
+    window = webview.create_window(
         title=f"NanoHarness — {config.model.name}",
         url=url,
         width=1200,
@@ -140,7 +166,9 @@ def main_desktop() -> int:
         resizable=True,
         min_size=(800, 600),
         text_select=True,
+        js_api=js_api,
     )
+    js_api._window = window
     webview.start(debug=config.debug)
     # Server thread is daemon — terminates with the process
     return 0

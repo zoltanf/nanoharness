@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .config import CONFIG_KEYS, THEME_OPTIONS, TOOL_NAMES
+from .config import CONFIG_KEYS, THEME_OPTIONS, TOOL_NAMES, save_recent_workspace
 
 if TYPE_CHECKING:
     from .config import Config
@@ -31,7 +31,7 @@ HELP_TEXT = """\
 ## Commands
 
 - `/safety [confirm|workspace|none]` — Show or set safety level for this session
-- `/workspace [DIR]` — Show or switch workspace directory
+- `/workspace [DIR]` — Show or switch workspace directory *(TUI bare form opens recent-workspace picker)*
 - `/think [on|off|once]` — Toggle thinking mode; append to a message for one turn
 - `!<cmd>` — Run a shell command directly (e.g. `!ls -la`)
 - `/clear` — Clear conversation history
@@ -156,6 +156,7 @@ class CommandHandler:
                 if not new_path.is_dir():
                     return CommandResult(output=f"Error: not a directory: {new_path}")
                 self.config.workspace = new_path
+                save_recent_workspace(new_path)
                 return CommandResult(
                     output=f"Workspace changed to: {new_path}",
                     workspace_changed=True,
