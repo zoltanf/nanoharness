@@ -34,6 +34,7 @@ Option A: Terminal
 
 ```bash
 sudo xattr -r -d com.apple.quarantine "/Applications/NanoHarness.app"
+sudo xattr -r -d com.apple.quarantine "/opt/homebrew/bin/nanoh"
 ```
 
 Option B: System Settings
