@@ -48,3 +48,4 @@ test-results/
 "I was here.txt"
 /.claude/launch.json
 /.nanoharness/todo.json
+/.nanoharness

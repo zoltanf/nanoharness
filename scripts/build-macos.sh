@@ -54,6 +54,26 @@ if [[ -z "$DEFAULT_UV_BIN" ]]; then
   exit 1
 fi
 
+remove_tree() {
+  local path="$1"
+  local attempt
+  if [[ ! -e "$path" ]]; then
+    return
+  fi
+  for attempt in 1 2 3 4 5; do
+    rm -rf "$path" 2>/dev/null || true
+    if [[ ! -e "$path" ]]; then
+      return
+    fi
+    find "$path" -name .DS_Store -delete 2>/dev/null || true
+    chmod -R u+w "$path" 2>/dev/null || true
+    sleep 0.2
+  done
+  echo "Failed to remove existing path: $path" >&2
+  find "$path" -maxdepth 4 -ls >&2 || true
+  exit 1
+}
+
 x86_64_user_base() {
   arch -x86_64 /usr/bin/python3 -m site --user-base 2>/dev/null | tail -n 1
 }
@@ -265,7 +285,8 @@ if [[ " ${TARGET_ARCHES[*]} " == *" arm64 "* ]]; then
   echo "  arm64 uv: $(uv_bin_for_arch arm64)"
 fi
 
-rm -rf "$BUILD_ROOT" "$DIST_ROOT"
+remove_tree "$BUILD_ROOT"
+remove_tree "$DIST_ROOT"
 mkdir -p "$ASSETS_ROOT" "$DIST_ROOT"
 : > "$SHA256SUMS_PATH"
 : > "$ARTIFACTS_LIST"
